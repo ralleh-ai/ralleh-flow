@@ -74,6 +74,8 @@ type ApprovalDecisionInput struct {
 	Rationale string
 }
 
+const runStatusChangesRequested = "changes_requested"
+
 type RunService struct {
 	store       *RunStore
 	workflows   WorkflowService
@@ -214,6 +216,44 @@ func (s *RunService) RejectApproval(ctx context.Context, approvalID string, inpu
 	}
 
 	for _, event := range []TimelineEvent{approvalRejectedEvent, runFailedEvent} {
+		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+			return RunRecord{}, err
+		}
+	}
+
+	return s.Get(ctx, run.ID)
+}
+
+func (s *RunService) RequestApprovalChanges(ctx context.Context, approvalID string, input ApprovalDecisionInput) (RunRecord, error) {
+	approval, run, _, _, err := s.loadApprovalContext(ctx, approvalID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+
+	runOwner := fmt.Sprintf("%s:%s:request-changes", s.workerID, run.ID)
+	runLease, err := s.coordinator.AcquireRunLease(ctx, run.ID, runOwner, s.leaseTTL)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	defer runLease.Release(ctx)
+
+	decidedAt := time.Now().UTC().Format(time.RFC3339)
+	decidedBy := strings.TrimSpace(input.DecidedBy)
+	if decidedBy == "" {
+		decidedBy = "operator"
+	}
+	rationale := strings.TrimSpace(input.Rationale)
+	if rationale == "" {
+		rationale = "Changes requested"
+	}
+
+	changesRequestedEvent := TimelineEvent{At: decidedAt, Type: "approval.changes_requested", Detail: fmt.Sprintf("Changes requested for step %s", approval.StepID)}
+	runPausedEvent := TimelineEvent{At: decidedAt, Type: "run.changes_requested", Detail: fmt.Sprintf("Run %s paused for requested changes on step %s", run.ID, approval.StepID)}
+	if err := s.store.DecideApprovalAndTransitionRun(ctx, approval.ID, run.ID, "pending", runStatusChangesRequested, decidedBy, rationale, decidedAt, "waiting_for_approval", runStatusChangesRequested, approval.StepID, []TimelineEvent{changesRequestedEvent, runPausedEvent}); err != nil {
+		return RunRecord{}, err
+	}
+
+	for _, event := range []TimelineEvent{changesRequestedEvent, runPausedEvent} {
 		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
 			return RunRecord{}, err
 		}

@@ -14,14 +14,16 @@ const pendingItems = computed(() => items.value.filter((approval) => approval.st
 const busyApprovalId = ref<string | null>(null)
 const actionError = ref<string>('')
 
-const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' | 'reject') => {
+const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' | 'reject' | 'request-changes') => {
   busyApprovalId.value = approval.id
   actionError.value = ''
   try {
     if (decision === 'approve') {
       await api.approveApproval(approval.id, { decidedBy })
-    } else {
+    } else if (decision === 'reject') {
       await api.rejectApproval(approval.id, { decidedBy })
+    } else {
+      await api.requestApprovalChanges(approval.id, { decidedBy, rationale: 'Changes requested by operator' })
     }
     await refresh()
   } catch (error: any) {
@@ -35,6 +37,7 @@ const badgeTone = (status: string) => {
   if (status === 'pending') return 'rf-badge rf-badge--warn'
   if (status === 'approved') return 'rf-badge rf-badge--ok'
   if (status === 'rejected') return 'rf-badge rf-badge--danger'
+  if (status === 'changes_requested') return 'rf-badge rf-badge--warn'
   return 'rf-badge'
 }
 
@@ -69,7 +72,7 @@ const manifestName = (approval: FlowApprovalRecord) => {
       <div class="rf-card md:col-span-2">
         <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Current scope</div>
         <p class="mt-3 text-sm text-[color:var(--rf-muted)]">
-          Phase 4 truth today: approve / reject is live end-to-end. Request-changes can come in the next governance slice.
+          Phase 4 truth today: approve / reject / request-changes is live end-to-end, with request-changes pausing the run for operator-directed rework.
         </p>
       </div>
     </section>
@@ -134,6 +137,9 @@ const manifestName = (approval: FlowApprovalRecord) => {
                 <div v-if="approval.status === 'pending'" class="flex justify-end gap-2">
                   <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'reject')">
                     Reject
+                  </button>
+                  <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'request-changes')">
+                    Request changes
                   </button>
                   <button class="rf-button" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'approve')">
                     <span v-if="busyApprovalId === approval.id">Working…</span>

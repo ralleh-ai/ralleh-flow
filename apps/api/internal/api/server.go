@@ -206,6 +206,33 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 		writeJSON(w, http.StatusOK, run)
 	})
 
+	r.Post("/v1/approvals/{approvalId}/request-changes", func(w http.ResponseWriter, r *http.Request) {
+		approvalID := chi.URLParam(r, "approvalId")
+		var input struct {
+			DecidedBy string `json:"decidedBy"`
+			Rationale string `json:"rationale"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+			return
+		}
+		run, err := runService.RequestApprovalChanges(r.Context(), approvalID, service.ApprovalDecisionInput{DecidedBy: input.DecidedBy, Rationale: input.Rationale})
+		if err != nil {
+			switch {
+			case errors.Is(err, service.ErrInvalidRunInput):
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "approvalId is required"})
+			case errors.Is(err, service.ErrApprovalNotFound):
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "approval not found"})
+			case errors.Is(err, service.ErrRunLeaseHeld), errors.Is(err, service.ErrRunStateConflict):
+				writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			default:
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, run)
+	})
+
 	r.Post("/v1/runs", func(w http.ResponseWriter, r *http.Request) {
 		var input service.CreateRunInput
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {

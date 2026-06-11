@@ -102,6 +102,14 @@ export const useFlowApi = () => {
     })
   }
 
+  const requestApprovalChanges = async (id: string, payload: ApprovalDecisionPayload = {}) => {
+    return await $fetch<FlowRun>(`/approvals/${id}/request-changes`, {
+      baseURL,
+      method: 'POST',
+      body: payload
+    })
+  }
+
   return {
     getWorkflows,
     getWorkflow,
@@ -114,6 +122,7 @@ export const useFlowApi = () => {
     failRunStep,
     approveApproval,
     rejectApproval,
+    requestApprovalChanges,
     validateWorkflow,
     dryRunWorkflow,
     createRun

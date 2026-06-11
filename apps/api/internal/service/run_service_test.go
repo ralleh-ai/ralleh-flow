@@ -768,6 +768,76 @@ steps:
 	}
 }
 
+func TestRunServiceRequestApprovalChangesPausesRun(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeWorkflowFixture(t, repoRoot)
+	initGitRepoWithCommit(t, repoRoot)
+
+	service := NewRunService(filepath.Join(repoRoot, "data", "ralleh-flow.db"), repoRoot, NewWorkflowService(repoRoot))
+
+	run, err := service.Create(context.Background(), CreateRunInput{
+		WorkflowID: "feature-development",
+		Variables: map[string]string{
+			"feature_name": "Flow polish",
+			"target_repo":  "ralleh-flow",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if _, err := service.AdvancePendingRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("advance research step: %v", err)
+	}
+	if _, err := service.DispatchActiveStep(context.Background(), run.ID, HandoffDispatchInput{SessionID: "session:research"}); err != nil {
+		t.Fatalf("dispatch research step: %v", err)
+	}
+	if _, err := service.CompleteActiveStep(context.Background(), run.ID, StepCompletionInput{Summary: "Research completed"}); err != nil {
+		t.Fatalf("complete research step: %v", err)
+	}
+	if _, err := service.AdvancePendingRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("advance implement step: %v", err)
+	}
+	if _, err := service.DispatchActiveStep(context.Background(), run.ID, HandoffDispatchInput{SessionID: "session:implement"}); err != nil {
+		t.Fatalf("dispatch implement step: %v", err)
+	}
+	if _, err := service.CompleteActiveStep(context.Background(), run.ID, StepCompletionInput{Summary: "Implementation completed"}); err != nil {
+		t.Fatalf("complete implement step: %v", err)
+	}
+
+	approvals, err := service.ListApprovals(context.Background())
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected 1 approval, got %#v", approvals)
+	}
+
+	updated, err := service.RequestApprovalChanges(context.Background(), approvals[0].ID, ApprovalDecisionInput{DecidedBy: "rick", Rationale: "Tighten the implementation"})
+	if err != nil {
+		t.Fatalf("request approval changes: %v", err)
+	}
+	if updated.Status != runStatusChangesRequested {
+		t.Fatalf("expected %q run after request changes, got %q", runStatusChangesRequested, updated.Status)
+	}
+	if updated.CurrentStep != "review" {
+		t.Fatalf("expected currentStep to remain review after request changes, got %q", updated.CurrentStep)
+	}
+	if last := updated.Timeline[len(updated.Timeline)-1]; last.Type != "run.changes_requested" {
+		t.Fatalf("expected final event run.changes_requested, got %#v", last)
+	}
+	if updated.Timeline[len(updated.Timeline)-2].Type != "approval.changes_requested" {
+		t.Fatalf("expected approval.changes_requested before run.changes_requested, got %#v", updated.Timeline)
+	}
+
+	latestApprovals, err := service.ListApprovals(context.Background())
+	if err != nil {
+		t.Fatalf("list approvals after request changes: %v", err)
+	}
+	if latestApprovals[0].Status != runStatusChangesRequested || latestApprovals[0].DecidedBy != "rick" || latestApprovals[0].Rationale != "Tighten the implementation" || latestApprovals[0].DecidedAt == "" {
+		t.Fatalf("expected request-changes record with decision metadata, got %#v", latestApprovals[0])
+	}
+}
+
 func TestRunServiceRejectApprovalFailsRun(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeWorkflowFixture(t, repoRoot)
