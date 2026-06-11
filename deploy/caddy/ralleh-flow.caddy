@@ -1,0 +1,18 @@
+# Caddy route snippet for Ralleh Flow.
+# Import this inside the main site block that terminates TLS.
+# Example:
+# app.example.com {
+#   import /opt/ralleh/ralleh-flow/deploy/caddy/ralleh-flow.caddy
+# }
+
+handle /flow {
+  redir /flow/ 308
+}
+
+handle_path /flow/* {
+  reverse_proxy 127.0.0.1:4300
+}
+
+handle_path /api/flow/* {
+  reverse_proxy 127.0.0.1:4310
+}

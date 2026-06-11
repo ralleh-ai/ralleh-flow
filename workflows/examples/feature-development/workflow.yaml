@@ -1,0 +1,24 @@
+metadata:
+  id: feature-development
+  name: Feature Development
+  version: 0.1.0
+  description: Build a feature through research, implementation, review, and approval.
+variables:
+  - key: feature_name
+    type: string
+    required: true
+    description: Human-readable feature name.
+  - key: target_repo
+    type: repository
+    required: true
+    description: Repository or workspace target for execution.
+steps:
+  - id: research
+    kind: agent_task
+    agent: ralleh-research
+  - id: implement
+    kind: agent_task
+    agent: ralleh-dev
+  - id: review
+    kind: human_approval
+    approverPolicy: reviewer

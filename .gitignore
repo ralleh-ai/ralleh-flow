@@ -1,0 +1,30 @@
+# Node / web build
+node_modules/
+.nuxt/
+.output/
+out/
+dist/
+coverage/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
+
+# Local data
+*.sqlite
+*.sqlite3
+*.db
+redis-data/

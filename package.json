@@ -1,0 +1,13 @@
+{
+  "name": "ralleh-flow",
+  "private": true,
+  "packageManager": "pnpm@10.17.1",
+  "scripts": {
+    "web:dev": "pnpm --dir apps/web dev",
+    "web:build": "pnpm --dir apps/web build",
+    "web:preview": "pnpm --dir apps/web preview",
+    "web:lint": "pnpm --dir apps/web exec nuxi typecheck",
+    "api:run": "cd apps/api && go run ./cmd/ralleh-flow-api",
+    "api:test": "cd apps/api && go test ./..."
+  }
+}
