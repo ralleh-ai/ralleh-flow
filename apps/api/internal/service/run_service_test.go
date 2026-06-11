@@ -677,6 +677,171 @@ func TestRunServiceCompleteActiveStepRequestsApprovalForHumanGate(t *testing.T) 
 	}
 }
 
+func TestRunServiceApproveApprovalQueuesNextStepWhenWorkflowContinues(t *testing.T) {
+	repoRoot := t.TempDir()
+	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatalf("mkdir workflow dir: %v", err)
+	}
+
+	workflowYAML := `metadata:
+  id: feature-development
+variables:
+  - key: feature_name
+    type: string
+    required: true
+  - key: target_repo
+    type: repository
+    required: true
+steps:
+  - id: research
+    kind: agent_task
+  - id: review
+    kind: human_approval
+    approverPolicy: reviewer
+  - id: publish
+    kind: agent_task
+    agent: ralleh-dev
+`
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	initGitRepoWithCommit(t, repoRoot)
+
+	service := NewRunService(filepath.Join(repoRoot, "data", "ralleh-flow.db"), repoRoot, NewWorkflowService(repoRoot))
+
+	run, err := service.Create(context.Background(), CreateRunInput{
+		WorkflowID: "feature-development",
+		Variables: map[string]string{
+			"feature_name": "Flow polish",
+			"target_repo":  "ralleh-flow",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if _, err := service.AdvancePendingRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("advance research step: %v", err)
+	}
+	if _, err := service.DispatchActiveStep(context.Background(), run.ID, HandoffDispatchInput{SessionID: "session:research"}); err != nil {
+		t.Fatalf("dispatch research step: %v", err)
+	}
+	waiting, err := service.CompleteActiveStep(context.Background(), run.ID, StepCompletionInput{Summary: "Research completed"})
+	if err != nil {
+		t.Fatalf("complete research step: %v", err)
+	}
+	if waiting.Status != "waiting_for_approval" || waiting.CurrentStep != "review" {
+		t.Fatalf("expected waiting_for_approval on review step, got %#v", waiting)
+	}
+
+	approvals, err := service.ListApprovals(context.Background())
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected 1 approval, got %#v", approvals)
+	}
+
+	approved, err := service.ApproveApproval(context.Background(), approvals[0].ID, ApprovalDecisionInput{DecidedBy: "rick", Rationale: "Looks good"})
+	if err != nil {
+		t.Fatalf("approve approval: %v", err)
+	}
+	if approved.Status != "pending" {
+		t.Fatalf("expected pending run after approval, got %q", approved.Status)
+	}
+	if approved.CurrentStep != "publish" {
+		t.Fatalf("expected currentStep publish after approval, got %q", approved.CurrentStep)
+	}
+	if last := approved.Timeline[len(approved.Timeline)-1]; last.Type != "run.pending" {
+		t.Fatalf("expected final event run.pending, got %#v", last)
+	}
+	if approved.Timeline[len(approved.Timeline)-2].Type != "approval.granted" {
+		t.Fatalf("expected approval.granted before run.pending, got %#v", approved.Timeline)
+	}
+
+	latestApprovals, err := service.ListApprovals(context.Background())
+	if err != nil {
+		t.Fatalf("list approvals after approval: %v", err)
+	}
+	if latestApprovals[0].Status != "approved" || latestApprovals[0].DecidedBy != "rick" || latestApprovals[0].Rationale != "Looks good" || latestApprovals[0].DecidedAt == "" {
+		t.Fatalf("expected approved record with decision metadata, got %#v", latestApprovals[0])
+	}
+}
+
+func TestRunServiceRejectApprovalFailsRun(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeWorkflowFixture(t, repoRoot)
+	initGitRepoWithCommit(t, repoRoot)
+
+	service := NewRunService(filepath.Join(repoRoot, "data", "ralleh-flow.db"), repoRoot, NewWorkflowService(repoRoot))
+
+	run, err := service.Create(context.Background(), CreateRunInput{
+		WorkflowID: "feature-development",
+		Variables: map[string]string{
+			"feature_name": "Flow polish",
+			"target_repo":  "ralleh-flow",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if _, err := service.AdvancePendingRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("advance research step: %v", err)
+	}
+	if _, err := service.DispatchActiveStep(context.Background(), run.ID, HandoffDispatchInput{SessionID: "session:research"}); err != nil {
+		t.Fatalf("dispatch research step: %v", err)
+	}
+	if _, err := service.CompleteActiveStep(context.Background(), run.ID, StepCompletionInput{Summary: "Research completed"}); err != nil {
+		t.Fatalf("complete research step: %v", err)
+	}
+	if _, err := service.AdvancePendingRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("advance implement step: %v", err)
+	}
+	if _, err := service.DispatchActiveStep(context.Background(), run.ID, HandoffDispatchInput{SessionID: "session:implement"}); err != nil {
+		t.Fatalf("dispatch implement step: %v", err)
+	}
+	waiting, err := service.CompleteActiveStep(context.Background(), run.ID, StepCompletionInput{Summary: "Implementation completed"})
+	if err != nil {
+		t.Fatalf("complete implement step: %v", err)
+	}
+	if waiting.Status != "waiting_for_approval" {
+		t.Fatalf("expected waiting_for_approval, got %q", waiting.Status)
+	}
+
+	approvals, err := service.ListApprovals(context.Background())
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected 1 approval, got %#v", approvals)
+	}
+
+	rejected, err := service.RejectApproval(context.Background(), approvals[0].ID, ApprovalDecisionInput{DecidedBy: "rick", Rationale: "Needs revision"})
+	if err != nil {
+		t.Fatalf("reject approval: %v", err)
+	}
+	if rejected.Status != "failed" {
+		t.Fatalf("expected failed run after rejection, got %q", rejected.Status)
+	}
+	if rejected.CurrentStep != "review" {
+		t.Fatalf("expected currentStep to remain review after rejection, got %q", rejected.CurrentStep)
+	}
+	if last := rejected.Timeline[len(rejected.Timeline)-1]; last.Type != "run.failed" {
+		t.Fatalf("expected final event run.failed, got %#v", last)
+	}
+	if rejected.Timeline[len(rejected.Timeline)-2].Type != "approval.rejected" {
+		t.Fatalf("expected approval.rejected before run.failed, got %#v", rejected.Timeline)
+	}
+
+	latestApprovals, err := service.ListApprovals(context.Background())
+	if err != nil {
+		t.Fatalf("list approvals after rejection: %v", err)
+	}
+	if latestApprovals[0].Status != "rejected" || latestApprovals[0].DecidedBy != "rick" || latestApprovals[0].Rationale != "Needs revision" || latestApprovals[0].DecidedAt == "" {
+		t.Fatalf("expected rejected record with decision metadata, got %#v", latestApprovals[0])
+	}
+}
+
 func TestRunServiceFailActiveStepMarksRunFailed(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeWorkflowFixture(t, repoRoot)

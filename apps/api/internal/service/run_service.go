@@ -20,6 +20,7 @@ import (
 
 var (
 	ErrRunNotFound              = errors.New("run not found")
+	ErrApprovalNotFound         = errors.New("approval not found")
 	ErrWorkflowMissing          = errors.New("workflow not found")
 	ErrInvalidRunInput          = errors.New("invalid run input")
 	ErrMissingWorkflowVariables = errors.New("missing required workflow variables")
@@ -66,6 +67,11 @@ type StepFailureInput struct {
 type HandoffDispatchInput struct {
 	SessionID string
 	Note      string
+}
+
+type ApprovalDecisionInput struct {
+	DecidedBy string
+	Rationale string
 }
 
 type RunService struct {
@@ -128,6 +134,92 @@ func (s *RunService) List(ctx context.Context) ([]RunRecord, error) {
 
 func (s *RunService) ListApprovals(ctx context.Context) ([]ApprovalRecord, error) {
 	return s.store.ListApprovals(ctx)
+}
+
+func (s *RunService) ApproveApproval(ctx context.Context, approvalID string, input ApprovalDecisionInput) (RunRecord, error) {
+	approval, run, workflow, _, err := s.loadApprovalContext(ctx, approvalID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+
+	runOwner := fmt.Sprintf("%s:%s:approve", s.workerID, run.ID)
+	runLease, err := s.coordinator.AcquireRunLease(ctx, run.ID, runOwner, s.leaseTTL)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	defer runLease.Release(ctx)
+
+	decidedAt := time.Now().UTC().Format(time.RFC3339)
+	decidedBy := strings.TrimSpace(input.DecidedBy)
+	if decidedBy == "" {
+		decidedBy = "operator"
+	}
+	rationale := strings.TrimSpace(input.Rationale)
+
+	approvalGrantedEvent := TimelineEvent{At: decidedAt, Type: "approval.granted", Detail: fmt.Sprintf("Approval granted for step %s", approval.StepID)}
+	timelineEvents := []TimelineEvent{approvalGrantedEvent}
+	publishedEvents := []TimelineEvent{approvalGrantedEvent}
+	transitionStatus := "completed"
+	transitionStepID := ""
+
+	if nextStep, ok := nextWorkflowStep(workflow, approval.StepID); ok {
+		transitionStatus = "pending"
+		transitionStepID = nextStep.ID
+		runPendingEvent := TimelineEvent{At: decidedAt, Type: "run.pending", Detail: fmt.Sprintf("Run %s queued next step %s after approval", run.ID, nextStep.ID)}
+		timelineEvents = append(timelineEvents, runPendingEvent)
+		publishedEvents = append(publishedEvents, runPendingEvent)
+	} else {
+		runCompletedEvent := TimelineEvent{At: decidedAt, Type: "run.completed", Detail: fmt.Sprintf("Run %s completed", run.ID)}
+		timelineEvents = append(timelineEvents, runCompletedEvent)
+		publishedEvents = append(publishedEvents, runCompletedEvent)
+	}
+
+	if err := s.store.DecideApprovalAndTransitionRun(ctx, approval.ID, run.ID, "pending", "approved", decidedBy, rationale, decidedAt, "waiting_for_approval", transitionStatus, transitionStepID, timelineEvents); err != nil {
+		return RunRecord{}, err
+	}
+
+	for _, event := range publishedEvents {
+		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+			return RunRecord{}, err
+		}
+	}
+
+	return s.Get(ctx, run.ID)
+}
+
+func (s *RunService) RejectApproval(ctx context.Context, approvalID string, input ApprovalDecisionInput) (RunRecord, error) {
+	approval, run, _, _, err := s.loadApprovalContext(ctx, approvalID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+
+	runOwner := fmt.Sprintf("%s:%s:reject", s.workerID, run.ID)
+	runLease, err := s.coordinator.AcquireRunLease(ctx, run.ID, runOwner, s.leaseTTL)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	defer runLease.Release(ctx)
+
+	decidedAt := time.Now().UTC().Format(time.RFC3339)
+	decidedBy := strings.TrimSpace(input.DecidedBy)
+	if decidedBy == "" {
+		decidedBy = "operator"
+	}
+	rationale := strings.TrimSpace(input.Rationale)
+
+	approvalRejectedEvent := TimelineEvent{At: decidedAt, Type: "approval.rejected", Detail: fmt.Sprintf("Approval rejected for step %s", approval.StepID)}
+	runFailedEvent := TimelineEvent{At: decidedAt, Type: "run.failed", Detail: fmt.Sprintf("Run %s failed during approval for step %s", run.ID, approval.StepID)}
+	if err := s.store.DecideApprovalAndTransitionRun(ctx, approval.ID, run.ID, "pending", "rejected", decidedBy, rationale, decidedAt, "waiting_for_approval", "failed", approval.StepID, []TimelineEvent{approvalRejectedEvent, runFailedEvent}); err != nil {
+		return RunRecord{}, err
+	}
+
+	for _, event := range []TimelineEvent{approvalRejectedEvent, runFailedEvent} {
+		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+			return RunRecord{}, err
+		}
+	}
+
+	return s.Get(ctx, run.ID)
 }
 
 func (s *RunService) Get(ctx context.Context, runID string) (RunRecord, error) {
@@ -499,6 +591,56 @@ func (s *RunService) loadActiveStepContext(ctx context.Context, runID string) (R
 		return RunRecord{}, StepRecord{}, WorkflowDetail{}, fmt.Errorf("%w: no active step recorded for run %s", ErrRunStateConflict, runID)
 	}
 	return run, step, workflow, nil
+}
+
+func (s *RunService) loadApprovalContext(ctx context.Context, approvalID string) (ApprovalRecord, RunRecord, WorkflowDetail, WorkflowStep, error) {
+	approvalID = strings.TrimSpace(approvalID)
+	if approvalID == "" {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, ErrInvalidRunInput
+	}
+
+	approval, found, err := s.store.GetApproval(ctx, approvalID)
+	if err != nil {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, err
+	}
+	if !found {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, ErrApprovalNotFound
+	}
+
+	run, found, err := s.store.Get(ctx, approval.RunID)
+	if err != nil {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, err
+	}
+	if !found {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, ErrRunNotFound
+	}
+
+	workflow, found, err := s.workflows.Get(run.WorkflowID)
+	if err != nil {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, err
+	}
+	if !found {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, ErrWorkflowMissing
+	}
+
+	step, found := workflowStepByID(workflow, approval.StepID)
+	if !found {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, fmt.Errorf("%w: workflow step %s missing for approval %s", ErrRunStateConflict, approval.StepID, approval.ID)
+	}
+	if step.Kind != "human_approval" {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, fmt.Errorf("%w: approval %s does not target a human_approval step", ErrRunStateConflict, approval.ID)
+	}
+	if run.Status != "waiting_for_approval" {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, fmt.Errorf("%w: run %s is not waiting for approval", ErrRunStateConflict, run.ID)
+	}
+	if strings.TrimSpace(run.CurrentStep) != strings.TrimSpace(approval.StepID) {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, fmt.Errorf("%w: run %s current step does not match approval %s", ErrRunStateConflict, run.ID, approval.ID)
+	}
+	if approval.Status != "pending" {
+		return ApprovalRecord{}, RunRecord{}, WorkflowDetail{}, WorkflowStep{}, fmt.Errorf("%w: approval %s is not pending", ErrRunStateConflict, approval.ID)
+	}
+
+	return approval, run, workflow, step, nil
 }
 
 func (s *RunService) writeStepCheckpoint(runID, label string, payload map[string]any) error {
@@ -1179,6 +1321,95 @@ func (s *RunStore) ListApprovals(ctx context.Context) ([]ApprovalRecord, error) 
 	}
 
 	return items, nil
+}
+
+func (s *RunStore) GetApproval(ctx context.Context, approvalID string) (ApprovalRecord, bool, error) {
+	db, err := s.open()
+	if err != nil {
+		return ApprovalRecord{}, false, err
+	}
+	defer db.Close()
+
+	var item ApprovalRecord
+	err = db.QueryRowContext(ctx, `
+		SELECT id, run_id, step_id, kind, status, approver_policy, requested_by, decided_by, rationale, evidence_manifest, created_at, decided_at
+		FROM run_approvals
+		WHERE id = ?
+	`, approvalID).Scan(&item.ID, &item.RunID, &item.StepID, &item.Kind, &item.Status, &item.ApproverPolicy, &item.RequestedBy, &item.DecidedBy, &item.Rationale, &item.EvidenceManifest, &item.CreatedAt, &item.DecidedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ApprovalRecord{}, false, nil
+		}
+		return ApprovalRecord{}, false, err
+	}
+
+	return item, true, nil
+}
+
+func (s *RunStore) DecideApprovalAndTransitionRun(ctx context.Context, approvalID, runID, expectedApprovalStatus, nextApprovalStatus, decidedBy, rationale, decidedAt, expectedRunStatus, nextRunStatus, nextCurrentStep string, events []TimelineEvent) error {
+	db, err := s.open()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE run_approvals
+		SET status = ?, decided_by = ?, rationale = ?, decided_at = ?
+		WHERE id = ? AND run_id = ? AND status = ?
+	`, nextApprovalStatus, decidedBy, rationale, decidedAt, approvalID, runID, expectedApprovalStatus)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM run_approvals WHERE id = ?)`, approvalID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrApprovalNotFound
+		}
+		return ErrRunStateConflict
+	}
+
+	result, err = tx.ExecContext(ctx, `
+		UPDATE runs
+		SET status = ?, current_step = ?
+		WHERE id = ? AND status = ?
+	`, nextRunStatus, nextCurrentStep, runID, expectedRunStatus)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err = result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?)`, runID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrRunNotFound
+		}
+		return ErrRunStateConflict
+	}
+
+	if err := appendTimelineTx(ctx, tx, runID, events); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (s *RunStore) CompareAndSwapRunState(ctx context.Context, runID, expectedStatus, nextStatus, currentStep string, event TimelineEvent) error {

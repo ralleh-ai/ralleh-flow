@@ -1,5 +1,10 @@
 import type { FlowAdvanceRunResult, FlowApprovalRecord, FlowDryRunResult, FlowRun, FlowStepCompletionResult, FlowStepDispatchResult, FlowStepFailureResult, FlowValidationResult, FlowWorkflow, FlowWorkflowDetail, ListResponse } from '~/types/flow'
 
+type ApprovalDecisionPayload = {
+  decidedBy?: string
+  rationale?: string
+}
+
 export const useFlowApi = () => {
   const config = useRuntimeConfig()
   const baseURL = config.public.apiBase
@@ -81,6 +86,22 @@ export const useFlowApi = () => {
     })
   }
 
+  const approveApproval = async (id: string, payload: ApprovalDecisionPayload = {}) => {
+    return await $fetch<FlowRun>(`/approvals/${id}/approve`, {
+      baseURL,
+      method: 'POST',
+      body: payload
+    })
+  }
+
+  const rejectApproval = async (id: string, payload: ApprovalDecisionPayload = {}) => {
+    return await $fetch<FlowRun>(`/approvals/${id}/reject`, {
+      baseURL,
+      method: 'POST',
+      body: payload
+    })
+  }
+
   return {
     getWorkflows,
     getWorkflow,
@@ -91,6 +112,8 @@ export const useFlowApi = () => {
     dispatchRunStep,
     completeRunStep,
     failRunStep,
+    approveApproval,
+    rejectApproval,
     validateWorkflow,
     dryRunWorkflow,
     createRun
