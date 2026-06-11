@@ -1052,6 +1052,184 @@ func writeTestJSON(t *testing.T, w http.ResponseWriter, status int, payload any)
 	}
 }
 
+func TestCompleteStepQueuesNextStepInsteadOfCompletingRun(t *testing.T) {
+	repoRoot := t.TempDir()
+	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatalf("mkdir workflow dir: %v", err)
+	}
+
+	workflowYAML := `metadata:
+  id: feature-development
+variables:
+  - key: feature_name
+    type: string
+    required: true
+  - key: target_repo
+    type: repository
+    required: true
+steps:
+  - id: research
+    kind: agent_task
+    agent: carmack
+  - id: implement
+    kind: agent_task
+    agent: picasso
+  - id: review
+    kind: human_approval
+    approverPolicy: reviewer
+`
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	initGitRepoWithCommit(t, repoRoot)
+
+	app := NewApp(config.Config{
+		APIAddr:        ":0",
+		AllowedOrigins: "http://localhost:4300",
+		RepoRoot:       repoRoot,
+		DBPath:         filepath.Join(repoRoot, "data", "ralleh-flow.db"),
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader([]byte(`{"workflowId":"feature-development","variables":{"feature_name":"Flow Polish","target_repo":"ralleh-flow"}}`)))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRes := httptest.NewRecorder()
+	app.Server.Handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (%s)", createRes.Code, createRes.Body.String())
+	}
+
+	var created map[string]any
+	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created run: %v", err)
+	}
+	runID, _ := created["id"].(string)
+
+	advanceReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/advance", runID), nil)
+	advanceRes := httptest.NewRecorder()
+	app.Server.Handler.ServeHTTP(advanceRes, advanceReq)
+	if advanceRes.Code != http.StatusOK {
+		t.Fatalf("expected advance 200, got %d (%s)", advanceRes.Code, advanceRes.Body.String())
+	}
+
+	dispatchReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/dispatch-step", runID), bytes.NewReader([]byte(`{"sessionId":"session:abc123","note":"dispatch bound"}`)))
+	dispatchReq.Header.Set("Content-Type", "application/json")
+	dispatchRes := httptest.NewRecorder()
+	app.Server.Handler.ServeHTTP(dispatchRes, dispatchReq)
+	if dispatchRes.Code != http.StatusOK {
+		t.Fatalf("expected dispatch 200, got %d (%s)", dispatchRes.Code, dispatchRes.Body.String())
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/complete-step", runID), bytes.NewReader([]byte(`{"summary":"done"}`)))
+	completeReq.Header.Set("Content-Type", "application/json")
+	completeRes := httptest.NewRecorder()
+	app.Server.Handler.ServeHTTP(completeRes, completeReq)
+	if completeRes.Code != http.StatusOK {
+		t.Fatalf("expected complete 200, got %d (%s)", completeRes.Code, completeRes.Body.String())
+	}
+	if !strings.Contains(completeRes.Body.String(), `"status":"pending"`) {
+		t.Fatalf("expected pending run status after first step completion, got %s", completeRes.Body.String())
+	}
+	if !strings.Contains(completeRes.Body.String(), `"currentStep":"implement"`) {
+		t.Fatalf("expected currentStep implement after first step completion, got %s", completeRes.Body.String())
+	}
+	if !strings.Contains(completeRes.Body.String(), `"type":"run.pending"`) {
+		t.Fatalf("expected run.pending event in response, got %s", completeRes.Body.String())
+	}
+}
+
+func TestCompleteStepRequestsApprovalWhenNextStepIsHumanGate(t *testing.T) {
+	repoRoot := t.TempDir()
+	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatalf("mkdir workflow dir: %v", err)
+	}
+
+	workflowYAML := `metadata:
+  id: feature-development
+variables:
+  - key: feature_name
+    type: string
+    required: true
+  - key: target_repo
+    type: repository
+    required: true
+steps:
+  - id: research
+    kind: agent_task
+    agent: carmack
+  - id: implement
+    kind: agent_task
+    agent: picasso
+  - id: review
+    kind: human_approval
+    approverPolicy: reviewer
+`
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	initGitRepoWithCommit(t, repoRoot)
+
+	app := NewApp(config.Config{
+		APIAddr:        ":0",
+		AllowedOrigins: "http://localhost:4300",
+		RepoRoot:       repoRoot,
+		DBPath:         filepath.Join(repoRoot, "data", "ralleh-flow.db"),
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader([]byte(`{"workflowId":"feature-development","variables":{"feature_name":"Flow Polish","target_repo":"ralleh-flow"}}`)))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRes := httptest.NewRecorder()
+	app.Server.Handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (%s)", createRes.Code, createRes.Body.String())
+	}
+
+	var created map[string]any
+	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created run: %v", err)
+	}
+	runID, _ := created["id"].(string)
+
+	for idx, sessionID := range []string{"session:research", "session:implement"} {
+		advanceReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/advance", runID), nil)
+		advanceRes := httptest.NewRecorder()
+		app.Server.Handler.ServeHTTP(advanceRes, advanceReq)
+		if advanceRes.Code != http.StatusOK {
+			t.Fatalf("expected advance %d to return 200, got %d (%s)", idx+1, advanceRes.Code, advanceRes.Body.String())
+		}
+
+		dispatchReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/dispatch-step", runID), bytes.NewReader([]byte(fmt.Sprintf(`{"sessionId":"%s"}`, sessionID))))
+		dispatchReq.Header.Set("Content-Type", "application/json")
+		dispatchRes := httptest.NewRecorder()
+		app.Server.Handler.ServeHTTP(dispatchRes, dispatchReq)
+		if dispatchRes.Code != http.StatusOK {
+			t.Fatalf("expected dispatch %d to return 200, got %d (%s)", idx+1, dispatchRes.Code, dispatchRes.Body.String())
+		}
+
+		completeReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/complete-step", runID), bytes.NewReader([]byte(`{"summary":"done"}`)))
+		completeReq.Header.Set("Content-Type", "application/json")
+		completeRes := httptest.NewRecorder()
+		app.Server.Handler.ServeHTTP(completeRes, completeReq)
+		if completeRes.Code != http.StatusOK {
+			t.Fatalf("expected complete %d to return 200, got %d (%s)", idx+1, completeRes.Code, completeRes.Body.String())
+		}
+		if idx == 1 {
+			if !strings.Contains(completeRes.Body.String(), `"status":"waiting_for_approval"`) {
+				t.Fatalf("expected waiting_for_approval after implement completion, got %s", completeRes.Body.String())
+			}
+			if !strings.Contains(completeRes.Body.String(), `"currentStep":"review"`) {
+				t.Fatalf("expected currentStep review after implement completion, got %s", completeRes.Body.String())
+			}
+			if !strings.Contains(completeRes.Body.String(), `"type":"approval.requested"`) {
+				t.Fatalf("expected approval.requested event after implement completion, got %s", completeRes.Body.String())
+			}
+		}
+	}
+}
+
 func TestCompleteStepRequiresDispatchedProofForAgentTask(t *testing.T) {
 	repoRoot := t.TempDir()
 	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")

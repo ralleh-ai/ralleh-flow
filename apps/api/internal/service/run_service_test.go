@@ -540,7 +540,7 @@ func TestRunServiceDispatchActiveStepRejectsDuplicateDispatch(t *testing.T) {
 	}
 }
 
-func TestRunServiceCompleteActiveStepPersistsCheckpointAndStatus(t *testing.T) {
+func TestRunServiceCompleteActiveStepQueuesNextAgentTask(t *testing.T) {
 	repoRoot := t.TempDir()
 	writeWorkflowFixture(t, repoRoot)
 	initGitRepoWithCommit(t, repoRoot)
@@ -557,8 +557,7 @@ func TestRunServiceCompleteActiveStepPersistsCheckpointAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	advanced, err := service.AdvancePendingRun(context.Background(), run.ID)
-	if err != nil {
+	if _, err := service.AdvancePendingRun(context.Background(), run.ID); err != nil {
 		t.Fatalf("advance pending run: %v", err)
 	}
 	if _, err := service.DispatchActiveStep(context.Background(), run.ID, HandoffDispatchInput{
@@ -572,11 +571,14 @@ func TestRunServiceCompleteActiveStepPersistsCheckpointAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("complete active step: %v", err)
 	}
-	if completed.Status != "completed" {
-		t.Fatalf("expected run status completed, got %q", completed.Status)
+	if completed.Status != "pending" {
+		t.Fatalf("expected run status pending for next agent step, got %q", completed.Status)
+	}
+	if completed.CurrentStep != "implement" {
+		t.Fatalf("expected current step implement, got %q", completed.CurrentStep)
 	}
 	if len(completed.Steps) != 1 {
-		t.Fatalf("expected one step record, got %#v", completed.Steps)
+		t.Fatalf("expected one completed step record before next advance, got %#v", completed.Steps)
 	}
 	if completed.Steps[0].Status != "completed" {
 		t.Fatalf("expected completed step record, got %#v", completed.Steps[0])
@@ -584,14 +586,14 @@ func TestRunServiceCompleteActiveStepPersistsCheckpointAndStatus(t *testing.T) {
 	if completed.Steps[0].FinishedAt == "" {
 		t.Fatalf("expected finished_at to be set, got %#v", completed.Steps[0])
 	}
-	if got := completed.Timeline[len(completed.Timeline)-1].Type; got != "run.completed" {
-		t.Fatalf("expected final event run.completed, got %#v", completed.Timeline)
+	if got := completed.Timeline[len(completed.Timeline)-1].Type; got != "run.pending" {
+		t.Fatalf("expected final event run.pending, got %#v", completed.Timeline)
 	}
 	if len(completed.Handoffs) != 1 || completed.Handoffs[0].Status != "completed" || completed.Handoffs[0].FinishedAt == "" {
 		t.Fatalf("expected completed handoff record, got %#v", completed.Handoffs)
 	}
-	if completed.Timeline[len(completed.Timeline)-3].Type != "step.handoff.completed" {
-		t.Fatalf("expected handoff completion event before step/run completion, got %#v", completed.Timeline)
+	if completed.Timeline[len(completed.Timeline)-2].Type != "step.completed" || completed.Timeline[len(completed.Timeline)-3].Type != "step.handoff.completed" {
+		t.Fatalf("expected handoff then step completion before requeue, got %#v", completed.Timeline)
 	}
 
 	checkpointPath := filepath.Join(repoRoot, "runtime", "runs", run.ID, "handoffs", "research-summary.json")
@@ -602,8 +604,54 @@ func TestRunServiceCompleteActiveStepPersistsCheckpointAndStatus(t *testing.T) {
 	if !strings.Contains(string(contents), "Research completed") || !strings.Contains(string(contents), "session:complete-test") {
 		t.Fatalf("expected checkpoint summary and session in %s, got %s", checkpointPath, string(contents))
 	}
+}
 
-	_ = advanced
+func TestRunServiceCompleteActiveStepRequestsApprovalForHumanGate(t *testing.T) {
+	repoRoot := t.TempDir()
+	writeWorkflowFixture(t, repoRoot)
+	initGitRepoWithCommit(t, repoRoot)
+
+	service := NewRunService(filepath.Join(repoRoot, "data", "ralleh-flow.db"), repoRoot, NewWorkflowService(repoRoot))
+
+	run, err := service.Create(context.Background(), CreateRunInput{
+		WorkflowID: "feature-development",
+		Variables: map[string]string{
+			"feature_name": "Flow polish",
+			"target_repo":  "ralleh-flow",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if _, err := service.AdvancePendingRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("advance research step: %v", err)
+	}
+	if _, err := service.DispatchActiveStep(context.Background(), run.ID, HandoffDispatchInput{SessionID: "session:research"}); err != nil {
+		t.Fatalf("dispatch research step: %v", err)
+	}
+	if _, err := service.CompleteActiveStep(context.Background(), run.ID, StepCompletionInput{Summary: "Research completed"}); err != nil {
+		t.Fatalf("complete research step: %v", err)
+	}
+	if _, err := service.AdvancePendingRun(context.Background(), run.ID); err != nil {
+		t.Fatalf("advance implement step: %v", err)
+	}
+	if _, err := service.DispatchActiveStep(context.Background(), run.ID, HandoffDispatchInput{SessionID: "session:implement"}); err != nil {
+		t.Fatalf("dispatch implement step: %v", err)
+	}
+
+	completed, err := service.CompleteActiveStep(context.Background(), run.ID, StepCompletionInput{Summary: "Implementation completed", CheckpointLabel: "implement-summary"})
+	if err != nil {
+		t.Fatalf("complete implement step: %v", err)
+	}
+	if completed.Status != "waiting_for_approval" {
+		t.Fatalf("expected waiting_for_approval, got %q", completed.Status)
+	}
+	if completed.CurrentStep != "review" {
+		t.Fatalf("expected current step review, got %q", completed.CurrentStep)
+	}
+	if got := completed.Timeline[len(completed.Timeline)-1].Type; got != "approval.requested" {
+		t.Fatalf("expected final event approval.requested, got %#v", completed.Timeline)
+	}
 }
 
 func TestRunServiceFailActiveStepMarksRunFailed(t *testing.T) {
@@ -868,6 +916,12 @@ variables:
 steps:
   - id: research
     kind: agent_task
+  - id: implement
+    kind: agent_task
+    agent: ralleh-dev
+  - id: review
+    kind: human_approval
+    approverPolicy: reviewer
 `
 	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
 		t.Fatalf("write workflow: %v", err)

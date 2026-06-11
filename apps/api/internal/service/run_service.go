@@ -355,11 +355,34 @@ func (s *RunService) CompleteActiveStep(ctx context.Context, runID string, input
 
 	handoffEvent := TimelineEvent{At: finishedAt, Type: "step.handoff.completed", Detail: fmt.Sprintf("Dispatch handoff completed for step %s", step.StepID)}
 	stepCompletedEvent := TimelineEvent{At: finishedAt, Type: "step.completed", Detail: fmt.Sprintf("Step %s completed", step.StepID)}
-	runCompletedEvent := TimelineEvent{At: finishedAt, Type: "run.completed", Detail: fmt.Sprintf("Run %s completed", run.ID)}
-	if err := s.store.CompleteStepAndTransitionRun(ctx, run.ID, step.StepID, "completed", "completed", finishedAt, "running", "completed", "", []TimelineEvent{handoffEvent, stepCompletedEvent, runCompletedEvent}); err != nil {
+	transitionStatus := "completed"
+	transitionStepID := ""
+	publishedEvents := []TimelineEvent{stepCompletedEvent}
+	timelineEvents := []TimelineEvent{handoffEvent, stepCompletedEvent}
+
+	if nextStep, ok := nextWorkflowStep(workflow, step.StepID); ok {
+		transitionStepID = nextStep.ID
+		if nextStep.Kind == "human_approval" {
+			transitionStatus = "waiting_for_approval"
+			approvalRequestedEvent := TimelineEvent{At: finishedAt, Type: "approval.requested", Detail: fmt.Sprintf("Approval requested for step %s", nextStep.ID)}
+			timelineEvents = append(timelineEvents, approvalRequestedEvent)
+			publishedEvents = append(publishedEvents, approvalRequestedEvent)
+		} else {
+			transitionStatus = "pending"
+			runPendingEvent := TimelineEvent{At: finishedAt, Type: "run.pending", Detail: fmt.Sprintf("Run %s queued next step %s", run.ID, nextStep.ID)}
+			timelineEvents = append(timelineEvents, runPendingEvent)
+			publishedEvents = append(publishedEvents, runPendingEvent)
+		}
+	} else {
+		runCompletedEvent := TimelineEvent{At: finishedAt, Type: "run.completed", Detail: fmt.Sprintf("Run %s completed", run.ID)}
+		timelineEvents = append(timelineEvents, runCompletedEvent)
+		publishedEvents = append(publishedEvents, runCompletedEvent)
+	}
+
+	if err := s.store.CompleteStepAndTransitionRun(ctx, run.ID, step.StepID, "completed", "completed", finishedAt, "running", transitionStatus, transitionStepID, timelineEvents); err != nil {
 		return RunRecord{}, err
 	}
-	for _, event := range []TimelineEvent{stepCompletedEvent, runCompletedEvent} {
+	for _, event := range publishedEvents {
 		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
 			return RunRecord{}, err
 		}
@@ -717,6 +740,24 @@ func firstWorkflowStepID(workflow WorkflowDetail) string {
 		return ""
 	}
 	return strings.TrimSpace(workflow.Steps[0].ID)
+}
+
+func nextWorkflowStep(workflow WorkflowDetail, stepID string) (WorkflowStep, bool) {
+	needle := strings.TrimSpace(stepID)
+	if needle == "" {
+		return WorkflowStep{}, false
+	}
+	for idx, step := range workflow.Steps {
+		if strings.TrimSpace(step.ID) != needle {
+			continue
+		}
+		nextIdx := idx + 1
+		if nextIdx >= len(workflow.Steps) {
+			return WorkflowStep{}, false
+		}
+		return workflow.Steps[nextIdx], true
+	}
+	return WorkflowStep{}, false
 }
 
 func normalizeInputVariables(variables map[string]string) map[string]string {
