@@ -296,6 +296,26 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 		writeJSON(w, http.StatusOK, run)
 	})
 
+	r.Post("/v1/runs/{runId}/resume", func(w http.ResponseWriter, r *http.Request) {
+		runID := chi.URLParam(r, "runId")
+		run, err := runService.ResumeRun(r.Context(), runID)
+		if err != nil {
+			switch {
+			case errors.Is(err, service.ErrInvalidRunInput):
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "runId is required"})
+			case errors.Is(err, service.ErrRunNotFound), errors.Is(err, service.ErrApprovalNotFound):
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+			case errors.Is(err, service.ErrRunLeaseHeld), errors.Is(err, service.ErrRunStateConflict):
+				writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			default:
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			}
+			return
+		}
+
+		writeJSON(w, http.StatusOK, run)
+	})
+
 	r.Post("/v1/runs/{runId}/dispatch-step", func(w http.ResponseWriter, r *http.Request) {
 		runID := chi.URLParam(r, "runId")
 		var input struct {

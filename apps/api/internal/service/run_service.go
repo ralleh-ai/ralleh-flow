@@ -75,6 +75,7 @@ type ApprovalDecisionInput struct {
 }
 
 const runStatusChangesRequested = "changes_requested"
+const runStatusWaitingForApproval = "waiting_for_approval"
 
 type RunService struct {
 	store       *RunStore
@@ -249,11 +250,80 @@ func (s *RunService) RequestApprovalChanges(ctx context.Context, approvalID stri
 
 	changesRequestedEvent := TimelineEvent{At: decidedAt, Type: "approval.changes_requested", Detail: fmt.Sprintf("Changes requested for step %s", approval.StepID)}
 	runPausedEvent := TimelineEvent{At: decidedAt, Type: "run.changes_requested", Detail: fmt.Sprintf("Run %s paused for requested changes on step %s", run.ID, approval.StepID)}
-	if err := s.store.DecideApprovalAndTransitionRun(ctx, approval.ID, run.ID, "pending", runStatusChangesRequested, decidedBy, rationale, decidedAt, "waiting_for_approval", runStatusChangesRequested, approval.StepID, []TimelineEvent{changesRequestedEvent, runPausedEvent}); err != nil {
+	if err := s.store.DecideApprovalAndTransitionRun(ctx, approval.ID, run.ID, "pending", runStatusChangesRequested, decidedBy, rationale, decidedAt, runStatusWaitingForApproval, runStatusChangesRequested, approval.StepID, []TimelineEvent{changesRequestedEvent, runPausedEvent}); err != nil {
 		return RunRecord{}, err
 	}
 
 	for _, event := range []TimelineEvent{changesRequestedEvent, runPausedEvent} {
+		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+			return RunRecord{}, err
+		}
+	}
+
+	return s.Get(ctx, run.ID)
+}
+
+func (s *RunService) ResumeRun(ctx context.Context, runID string) (RunRecord, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return RunRecord{}, ErrInvalidRunInput
+	}
+
+	run, found, err := s.store.Get(ctx, runID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if !found {
+		return RunRecord{}, ErrRunNotFound
+	}
+	if run.Status != runStatusChangesRequested {
+		return RunRecord{}, fmt.Errorf("%w: run %s is not awaiting requested changes", ErrRunStateConflict, run.ID)
+	}
+	if strings.TrimSpace(run.CurrentStep) == "" {
+		return RunRecord{}, fmt.Errorf("%w: run %s has no approval step to resume", ErrRunStateConflict, run.ID)
+	}
+
+	workflow, found, err := s.workflows.Get(run.WorkflowID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if !found {
+		return RunRecord{}, ErrWorkflowMissing
+	}
+	step, found := workflowStepByID(workflow, run.CurrentStep)
+	if !found {
+		return RunRecord{}, fmt.Errorf("%w: workflow step %s missing from workflow %s", ErrRunStateConflict, run.CurrentStep, run.WorkflowID)
+	}
+	if step.Kind != "human_approval" {
+		return RunRecord{}, fmt.Errorf("%w: run %s current step %s is not a human approval gate", ErrRunStateConflict, run.ID, step.ID)
+	}
+
+	approval, found, err := s.store.GetApprovalByRunAndStep(ctx, run.ID, step.ID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if !found {
+		return RunRecord{}, ErrApprovalNotFound
+	}
+	if approval.Status != runStatusChangesRequested {
+		return RunRecord{}, fmt.Errorf("%w: approval %s is not awaiting requested changes", ErrRunStateConflict, approval.ID)
+	}
+
+	runOwner := fmt.Sprintf("%s:%s:resume", s.workerID, runID)
+	runLease, err := s.coordinator.AcquireRunLease(ctx, runID, runOwner, s.leaseTTL)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	defer runLease.Release(ctx)
+
+	resumedAt := time.Now().UTC().Format(time.RFC3339)
+	approvalReopenedEvent := TimelineEvent{At: resumedAt, Type: "approval.reopened", Detail: fmt.Sprintf("Approval reopened for step %s", approval.StepID)}
+	runResumedEvent := TimelineEvent{At: resumedAt, Type: "run.waiting_for_approval", Detail: fmt.Sprintf("Run %s resumed to approval gate %s", run.ID, approval.StepID)}
+	if err := s.store.ReopenApprovalAndResumeRun(ctx, approval.ID, run.ID, runStatusChangesRequested, "pending", resumedAt, runStatusChangesRequested, runStatusWaitingForApproval, approval.StepID, []TimelineEvent{approvalReopenedEvent, runResumedEvent}); err != nil {
+		return RunRecord{}, err
+	}
+
+	for _, event := range []TimelineEvent{approvalReopenedEvent, runResumedEvent} {
 		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
 			return RunRecord{}, err
 		}
@@ -1386,6 +1456,31 @@ func (s *RunStore) GetApproval(ctx context.Context, approvalID string) (Approval
 	return item, true, nil
 }
 
+func (s *RunStore) GetApprovalByRunAndStep(ctx context.Context, runID, stepID string) (ApprovalRecord, bool, error) {
+	db, err := s.open()
+	if err != nil {
+		return ApprovalRecord{}, false, err
+	}
+	defer db.Close()
+
+	var item ApprovalRecord
+	err = db.QueryRowContext(ctx, `
+		SELECT id, run_id, step_id, kind, status, approver_policy, requested_by, decided_by, rationale, evidence_manifest, created_at, decided_at
+		FROM run_approvals
+		WHERE run_id = ? AND step_id = ?
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1
+	`, runID, stepID).Scan(&item.ID, &item.RunID, &item.StepID, &item.Kind, &item.Status, &item.ApproverPolicy, &item.RequestedBy, &item.DecidedBy, &item.Rationale, &item.EvidenceManifest, &item.CreatedAt, &item.DecidedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ApprovalRecord{}, false, nil
+		}
+		return ApprovalRecord{}, false, err
+	}
+
+	return item, true, nil
+}
+
 func (s *RunStore) DecideApprovalAndTransitionRun(ctx context.Context, approvalID, runID, expectedApprovalStatus, nextApprovalStatus, decidedBy, rationale, decidedAt, expectedRunStatus, nextRunStatus, nextCurrentStep string, events []TimelineEvent) error {
 	db, err := s.open()
 	if err != nil {
@@ -1404,6 +1499,72 @@ func (s *RunStore) DecideApprovalAndTransitionRun(ctx context.Context, approvalI
 		SET status = ?, decided_by = ?, rationale = ?, decided_at = ?
 		WHERE id = ? AND run_id = ? AND status = ?
 	`, nextApprovalStatus, decidedBy, rationale, decidedAt, approvalID, runID, expectedApprovalStatus)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM run_approvals WHERE id = ?)`, approvalID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrApprovalNotFound
+		}
+		return ErrRunStateConflict
+	}
+
+	result, err = tx.ExecContext(ctx, `
+		UPDATE runs
+		SET status = ?, current_step = ?
+		WHERE id = ? AND status = ?
+	`, nextRunStatus, nextCurrentStep, runID, expectedRunStatus)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err = result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runs WHERE id = ?)`, runID).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			return ErrRunNotFound
+		}
+		return ErrRunStateConflict
+	}
+
+	if err := appendTimelineTx(ctx, tx, runID, events); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *RunStore) ReopenApprovalAndResumeRun(ctx context.Context, approvalID, runID, expectedApprovalStatus, nextApprovalStatus, decidedAt, expectedRunStatus, nextRunStatus, nextCurrentStep string, events []TimelineEvent) error {
+	db, err := s.open()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `
+		UPDATE run_approvals
+		SET status = ?, decided_by = '', rationale = '', decided_at = ?
+		WHERE id = ? AND run_id = ? AND status = ?
+	`, nextApprovalStatus, decidedAt, approvalID, runID, expectedApprovalStatus)
 	if err != nil {
 		return err
 	}

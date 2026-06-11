@@ -11,10 +11,11 @@ const { data: approvals, pending, error, refresh } = await useAsyncData('flow-ap
 
 const items = computed(() => approvals.value ?? [])
 const pendingItems = computed(() => items.value.filter((approval) => approval.status === 'pending'))
+const resumableItems = computed(() => items.value.filter((approval) => approval.status === 'changes_requested'))
 const busyApprovalId = ref<string | null>(null)
 const actionError = ref<string>('')
 
-const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' | 'reject' | 'request-changes') => {
+const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' | 'reject' | 'request-changes' | 'resume') => {
   busyApprovalId.value = approval.id
   actionError.value = ''
   try {
@@ -22,8 +23,10 @@ const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' 
       await api.approveApproval(approval.id, { decidedBy })
     } else if (decision === 'reject') {
       await api.rejectApproval(approval.id, { decidedBy })
-    } else {
+    } else if (decision === 'request-changes') {
       await api.requestApprovalChanges(approval.id, { decidedBy, rationale: 'Changes requested by operator' })
+    } else {
+      await api.resumeRun(approval.runId)
     }
     await refresh()
   } catch (error: any) {
@@ -69,10 +72,15 @@ const manifestName = (approval: FlowApprovalRecord) => {
         <div class="mt-3 text-3xl font-semibold">{{ pendingItems.length }}</div>
         <p class="mt-2 text-sm text-[color:var(--rf-muted)]">Approvals currently blocking workflow progress.</p>
       </div>
+      <div class="rf-card">
+        <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Needs changes</div>
+        <div class="mt-3 text-3xl font-semibold">{{ resumableItems.length }}</div>
+        <p class="mt-2 text-sm text-[color:var(--rf-muted)]">Runs paused for rework that can be reopened to the approval gate.</p>
+      </div>
       <div class="rf-card md:col-span-2">
         <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Current scope</div>
         <p class="mt-3 text-sm text-[color:var(--rf-muted)]">
-          Phase 4 truth today: approve / reject / request-changes is live end-to-end, with request-changes pausing the run for operator-directed rework.
+          Phase 4 truth today: approve / reject / request-changes is live end-to-end, and paused runs can now be resumed back into the approval gate after rework.
         </p>
       </div>
     </section>
@@ -146,6 +154,10 @@ const manifestName = (approval: FlowApprovalRecord) => {
                     <span v-else>Approve</span>
                   </button>
                 </div>
+                <button v-else-if="approval.status === 'changes_requested'" class="rf-button" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'resume')">
+                  <span v-if="busyApprovalId === approval.id">Working…</span>
+                  <span v-else>Resume approval</span>
+                </button>
                 <span v-else class="text-xs text-[color:var(--rf-muted)]">Decision recorded</span>
               </td>
             </tr>

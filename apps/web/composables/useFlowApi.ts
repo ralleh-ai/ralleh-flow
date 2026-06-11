@@ -62,6 +62,13 @@ export const useFlowApi = () => {
     })
   }
 
+  const resumeRun = async (id: string) => {
+    return await $fetch<FlowRun>(`/runs/${id}/resume`, {
+      baseURL,
+      method: 'POST'
+    })
+  }
+
   const dispatchRunStep = async (id: string, payload: { sessionId?: string, note?: string }) => {
     return await $fetch<FlowStepDispatchResult>(`/runs/${id}/dispatch-step`, {
       baseURL,
@@ -117,6 +124,7 @@ export const useFlowApi = () => {
     getApprovals,
     getRun,
     advanceRun,
+    resumeRun,
     dispatchRunStep,
     completeRunStep,
     failRunStep,
