@@ -126,6 +126,10 @@ func (s *RunService) List(ctx context.Context) ([]RunRecord, error) {
 	return s.store.List(ctx)
 }
 
+func (s *RunService) ListApprovals(ctx context.Context) ([]ApprovalRecord, error) {
+	return s.store.ListApprovals(ctx)
+}
+
 func (s *RunService) Get(ctx context.Context, runID string) (RunRecord, error) {
 	run, found, err := s.store.Get(ctx, runID)
 	if err != nil {
@@ -359,11 +363,44 @@ func (s *RunService) CompleteActiveStep(ctx context.Context, runID string, input
 	transitionStepID := ""
 	publishedEvents := []TimelineEvent{stepCompletedEvent}
 	timelineEvents := []TimelineEvent{handoffEvent, stepCompletedEvent}
+	var approvalRecord *ApprovalRecord
 
 	if nextStep, ok := nextWorkflowStep(workflow, step.StepID); ok {
 		transitionStepID = nextStep.ID
 		if nextStep.Kind == "human_approval" {
 			transitionStatus = "waiting_for_approval"
+			approvalManifestLabel := sanitizeCheckpointLabel(nextStep.ID + "-approval-request")
+			approvalManifestPath := s.stepCheckpointPath(run.ID, approvalManifestLabel)
+			approvalRecord = &ApprovalRecord{
+				ID:               fmt.Sprintf("approval_%s_%s", run.ID, sanitizeBranchFragment(nextStep.ID)),
+				RunID:            run.ID,
+				StepID:           nextStep.ID,
+				Kind:             nextStep.Kind,
+				Status:           "pending",
+				ApproverPolicy:   nextStep.ApproverPolicy,
+				RequestedBy:      step.WorkerID,
+				EvidenceManifest: approvalManifestPath,
+				CreatedAt:        finishedAt,
+			}
+			if err := s.writeStepCheckpoint(run.ID, approvalManifestLabel, map[string]any{
+				"approvalId":       approvalRecord.ID,
+				"runId":            run.ID,
+				"workflowId":       workflow.ID,
+				"stepId":           nextStep.ID,
+				"status":           approvalRecord.Status,
+				"kind":             approvalRecord.Kind,
+				"approverPolicy":   approvalRecord.ApproverPolicy,
+				"requestedBy":      approvalRecord.RequestedBy,
+				"requestedAt":      approvalRecord.CreatedAt,
+				"sourceStepId":     step.StepID,
+				"sourceCheckpoint": s.stepCheckpointPath(run.ID, checkpointLabel),
+				"handoffDocument":  filepath.Join(run.WorktreePath, "HANDOFF.md"),
+				"evidenceManifest": approvalManifestPath,
+				"worktreePath":     run.WorktreePath,
+				"summary":          strings.TrimSpace(input.Summary),
+			}); err != nil {
+				return RunRecord{}, err
+			}
 			approvalRequestedEvent := TimelineEvent{At: finishedAt, Type: "approval.requested", Detail: fmt.Sprintf("Approval requested for step %s", nextStep.ID)}
 			timelineEvents = append(timelineEvents, approvalRequestedEvent)
 			publishedEvents = append(publishedEvents, approvalRequestedEvent)
@@ -379,7 +416,11 @@ func (s *RunService) CompleteActiveStep(ctx context.Context, runID string, input
 		publishedEvents = append(publishedEvents, runCompletedEvent)
 	}
 
-	if err := s.store.CompleteStepAndTransitionRun(ctx, run.ID, step.StepID, "completed", "completed", finishedAt, "running", transitionStatus, transitionStepID, timelineEvents); err != nil {
+	if approvalRecord != nil {
+		if err := s.store.CompleteStepAndTransitionRunWithApproval(ctx, run.ID, step.StepID, "completed", "completed", finishedAt, "running", transitionStatus, transitionStepID, timelineEvents, *approvalRecord); err != nil {
+			return RunRecord{}, err
+		}
+	} else if err := s.store.CompleteStepAndTransitionRun(ctx, run.ID, step.StepID, "completed", "completed", finishedAt, "running", transitionStatus, transitionStepID, timelineEvents); err != nil {
 		return RunRecord{}, err
 	}
 	for _, event := range publishedEvents {
@@ -470,11 +511,15 @@ func (s *RunService) writeStepCheckpoint(runID, label string, payload map[string
 		return fmt.Errorf("marshal checkpoint: %w", err)
 	}
 	body = append(body, '\n')
-	checkpointPath := filepath.Join(checkpointDir, label+".json")
+	checkpointPath := s.stepCheckpointPath(runID, label)
 	if err := os.WriteFile(checkpointPath, body, 0o644); err != nil {
 		return fmt.Errorf("write checkpoint: %w", err)
 	}
 	return nil
+}
+
+func (s *RunService) stepCheckpointPath(runID, label string) string {
+	return filepath.Join(s.repoRoot, "runtime", "runs", runID, "handoffs", label+".json")
 }
 
 func (s *RunService) writeHandoffDocument(run RunRecord, workflow WorkflowDetail, step StepRecord, handoff HandoffRecord, note string) (string, error) {
@@ -1013,6 +1058,14 @@ func (s *RunStore) MarkHandoffDispatched(ctx context.Context, runID, stepID, ses
 }
 
 func (s *RunStore) CompleteStepAndTransitionRun(ctx context.Context, runID, stepID, stepStatus, handoffStatus, finishedAt, expectedRunStatus, nextRunStatus, nextCurrentStep string, events []TimelineEvent) error {
+	return s.completeStepAndTransitionRunTx(ctx, runID, stepID, stepStatus, handoffStatus, finishedAt, expectedRunStatus, nextRunStatus, nextCurrentStep, events, nil)
+}
+
+func (s *RunStore) CompleteStepAndTransitionRunWithApproval(ctx context.Context, runID, stepID, stepStatus, handoffStatus, finishedAt, expectedRunStatus, nextRunStatus, nextCurrentStep string, events []TimelineEvent, approval ApprovalRecord) error {
+	return s.completeStepAndTransitionRunTx(ctx, runID, stepID, stepStatus, handoffStatus, finishedAt, expectedRunStatus, nextRunStatus, nextCurrentStep, events, &approval)
+}
+
+func (s *RunStore) completeStepAndTransitionRunTx(ctx context.Context, runID, stepID, stepStatus, handoffStatus, finishedAt, expectedRunStatus, nextRunStatus, nextCurrentStep string, events []TimelineEvent, approval *ApprovalRecord) error {
 	db, err := s.open()
 	if err != nil {
 		return err
@@ -1079,11 +1132,53 @@ func (s *RunStore) CompleteStepAndTransitionRun(ctx context.Context, runID, step
 		return ErrRunStateConflict
 	}
 
+	if approval != nil {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO run_approvals (id, run_id, step_id, kind, status, approver_policy, requested_by, decided_by, rationale, evidence_manifest, created_at, decided_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, approval.ID, approval.RunID, approval.StepID, approval.Kind, approval.Status, approval.ApproverPolicy, approval.RequestedBy, approval.DecidedBy, approval.Rationale, approval.EvidenceManifest, approval.CreatedAt, approval.DecidedAt); err != nil {
+			return err
+		}
+	}
+
 	if err := appendTimelineTx(ctx, tx, runID, events); err != nil {
 		return err
 	}
 
 	return tx.Commit()
+}
+
+func (s *RunStore) ListApprovals(ctx context.Context) ([]ApprovalRecord, error) {
+	db, err := s.open()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, run_id, step_id, kind, status, approver_policy, requested_by, decided_by, rationale, evidence_manifest, created_at, decided_at
+		FROM run_approvals
+		ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, created_at DESC, id DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []ApprovalRecord{}
+	for rows.Next() {
+		var item ApprovalRecord
+		if err := rows.Scan(&item.ID, &item.RunID, &item.StepID, &item.Kind, &item.Status, &item.ApproverPolicy, &item.RequestedBy, &item.DecidedBy, &item.Rationale, &item.EvidenceManifest, &item.CreatedAt, &item.DecidedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return items, nil
 }
 
 func (s *RunStore) CompareAndSwapRunState(ctx context.Context, runID, expectedStatus, nextStatus, currentStep string, event TimelineEvent) error {
@@ -1457,6 +1552,27 @@ func (s *RunStore) ensureSchema(db *sql.DB) error {
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY (run_id, step_id),
+			FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+		);
+	`); err != nil {
+		return err
+	}
+
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS run_approvals (
+			id TEXT PRIMARY KEY,
+			run_id TEXT NOT NULL,
+			step_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			status TEXT NOT NULL,
+			approver_policy TEXT NOT NULL DEFAULT '',
+			requested_by TEXT NOT NULL DEFAULT '',
+			decided_by TEXT NOT NULL DEFAULT '',
+			rationale TEXT NOT NULL DEFAULT '',
+			evidence_manifest TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			decided_at TEXT NOT NULL DEFAULT '',
+			UNIQUE (run_id, step_id),
 			FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
 		);
 	`); err != nil {

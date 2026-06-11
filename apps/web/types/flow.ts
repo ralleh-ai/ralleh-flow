@@ -55,6 +55,21 @@ export interface FlowHandoffRecord {
   updatedAt: string
 }
 
+export interface FlowApprovalRecord {
+  id: string
+  runId: string
+  stepId: string
+  kind: string
+  status: string
+  approverPolicy?: string
+  requestedBy: string
+  decidedBy?: string
+  rationale?: string
+  evidenceManifest?: string
+  createdAt: string
+  decidedAt?: string
+}
+
 export interface FlowRun {
   id: string
   workflowId: string

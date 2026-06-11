@@ -652,6 +652,29 @@ func TestRunServiceCompleteActiveStepRequestsApprovalForHumanGate(t *testing.T) 
 	if got := completed.Timeline[len(completed.Timeline)-1].Type; got != "approval.requested" {
 		t.Fatalf("expected final event approval.requested, got %#v", completed.Timeline)
 	}
+
+	approvals, err := service.ListApprovals(context.Background())
+	if err != nil {
+		t.Fatalf("list approvals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("expected 1 approval record, got %#v", approvals)
+	}
+	if approvals[0].RunID != run.ID || approvals[0].StepID != "review" {
+		t.Fatalf("expected approval bound to run %s review, got %#v", run.ID, approvals[0])
+	}
+	if approvals[0].Status != "pending" || approvals[0].Kind != "human_approval" {
+		t.Fatalf("expected pending human_approval record, got %#v", approvals[0])
+	}
+	if approvals[0].ApproverPolicy != "reviewer" {
+		t.Fatalf("expected approver policy reviewer, got %#v", approvals[0])
+	}
+	if approvals[0].EvidenceManifest == "" {
+		t.Fatalf("expected evidence manifest path, got %#v", approvals[0])
+	}
+	if _, err := os.Stat(approvals[0].EvidenceManifest); err != nil {
+		t.Fatalf("expected approval evidence manifest to exist: %v", err)
+	}
 }
 
 func TestRunServiceFailActiveStepMarksRunFailed(t *testing.T) {

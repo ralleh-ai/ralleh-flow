@@ -45,6 +45,21 @@ type RunRecord struct {
 	Handoffs     []HandoffRecord `json:"handoffs"`
 }
 
+type ApprovalRecord struct {
+	ID               string `json:"id"`
+	RunID            string `json:"runId"`
+	StepID           string `json:"stepId"`
+	Kind             string `json:"kind"`
+	Status           string `json:"status"`
+	ApproverPolicy   string `json:"approverPolicy,omitempty"`
+	RequestedBy      string `json:"requestedBy"`
+	DecidedBy        string `json:"decidedBy,omitempty"`
+	Rationale        string `json:"rationale,omitempty"`
+	EvidenceManifest string `json:"evidenceManifest,omitempty"`
+	CreatedAt        string `json:"createdAt"`
+	DecidedAt        string `json:"decidedAt,omitempty"`
+}
+
 type CreateRunInput struct {
 	WorkflowID string            `json:"workflowId"`
 	Variables  map[string]string `json:"variables"`

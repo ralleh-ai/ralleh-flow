@@ -233,6 +233,108 @@ steps:
 	}
 }
 
+func TestListApprovalsReturnsPersistedApprovalRequests(t *testing.T) {
+	repoRoot := t.TempDir()
+	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatalf("mkdir workflow dir: %v", err)
+	}
+
+	workflowYAML := `metadata:
+  id: feature-development
+variables:
+  - key: feature_name
+    type: string
+    required: true
+  - key: target_repo
+    type: repository
+    required: true
+steps:
+  - id: research
+    kind: agent_task
+    agent: carmack
+  - id: implement
+    kind: agent_task
+    agent: ralleh-dev
+  - id: review
+    kind: human_approval
+    approverPolicy: reviewer
+`
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	initGitRepoWithCommit(t, repoRoot)
+
+	server := NewServer(config.Config{
+		APIAddr:        ":0",
+		AllowedOrigins: "http://localhost:4300",
+		RepoRoot:       repoRoot,
+		DBPath:         filepath.Join(repoRoot, "data", "ralleh-flow.db"),
+	})
+
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader([]byte(`{"workflowId":"feature-development","variables":{"feature_name":"Flow Polish","target_repo":"ralleh-flow"}}`)))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRes := httptest.NewRecorder()
+	server.Handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d (%s)", createRes.Code, createRes.Body.String())
+	}
+
+	var created map[string]any
+	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created run: %v", err)
+	}
+	runID, _ := created["id"].(string)
+
+	for _, sessionID := range []string{"session:research", "session:implement"} {
+		advanceReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/advance", runID), nil)
+		advanceRes := httptest.NewRecorder()
+		server.Handler.ServeHTTP(advanceRes, advanceReq)
+		if advanceRes.Code != http.StatusOK {
+			t.Fatalf("expected advance 200, got %d (%s)", advanceRes.Code, advanceRes.Body.String())
+		}
+
+		dispatchReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/dispatch-step", runID), bytes.NewReader([]byte(fmt.Sprintf(`{"sessionId":"%s"}`, sessionID))))
+		dispatchReq.Header.Set("Content-Type", "application/json")
+		dispatchRes := httptest.NewRecorder()
+		server.Handler.ServeHTTP(dispatchRes, dispatchReq)
+		if dispatchRes.Code != http.StatusOK {
+			t.Fatalf("expected dispatch 200, got %d (%s)", dispatchRes.Code, dispatchRes.Body.String())
+		}
+
+		completeReq := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/v1/runs/%s/complete-step", runID), bytes.NewReader([]byte(`{"summary":"done"}`)))
+		completeReq.Header.Set("Content-Type", "application/json")
+		completeRes := httptest.NewRecorder()
+		server.Handler.ServeHTTP(completeRes, completeReq)
+		if completeRes.Code != http.StatusOK {
+			t.Fatalf("expected complete 200, got %d (%s)", completeRes.Code, completeRes.Body.String())
+		}
+	}
+
+	approvalsReq := httptest.NewRequest(http.MethodGet, "/v1/approvals", nil)
+	approvalsRes := httptest.NewRecorder()
+	server.Handler.ServeHTTP(approvalsRes, approvalsReq)
+	if approvalsRes.Code != http.StatusOK {
+		t.Fatalf("expected approvals 200, got %d (%s)", approvalsRes.Code, approvalsRes.Body.String())
+	}
+	if !strings.Contains(approvalsRes.Body.String(), `"items":[{`) {
+		t.Fatalf("expected approval items in response, got %s", approvalsRes.Body.String())
+	}
+	if !strings.Contains(approvalsRes.Body.String(), `"runId":"`+runID+`"`) {
+		t.Fatalf("expected approval run id %q, got %s", runID, approvalsRes.Body.String())
+	}
+	if !strings.Contains(approvalsRes.Body.String(), `"stepId":"review"`) {
+		t.Fatalf("expected approval step review, got %s", approvalsRes.Body.String())
+	}
+	if !strings.Contains(approvalsRes.Body.String(), `"status":"pending"`) {
+		t.Fatalf("expected pending approval, got %s", approvalsRes.Body.String())
+	}
+	if !strings.Contains(approvalsRes.Body.String(), `"approverPolicy":"reviewer"`) {
+		t.Fatalf("expected reviewer policy, got %s", approvalsRes.Body.String())
+	}
+}
+
 func TestNewAppUsesDefaultDispatcherForDispatchStep(t *testing.T) {
 	repoRoot := t.TempDir()
 	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")

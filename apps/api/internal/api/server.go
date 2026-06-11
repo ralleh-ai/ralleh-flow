@@ -142,6 +142,16 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	})
 
+	r.Get("/v1/approvals", func(w http.ResponseWriter, r *http.Request) {
+		items, err := runService.ListApprovals(r.Context())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	})
+
 	r.Post("/v1/runs", func(w http.ResponseWriter, r *http.Request) {
 		var input service.CreateRunInput
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {

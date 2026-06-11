@@ -1,4 +1,4 @@
-import type { FlowAdvanceRunResult, FlowDryRunResult, FlowRun, FlowStepCompletionResult, FlowStepDispatchResult, FlowStepFailureResult, FlowValidationResult, FlowWorkflow, FlowWorkflowDetail, ListResponse } from '~/types/flow'
+import type { FlowAdvanceRunResult, FlowApprovalRecord, FlowDryRunResult, FlowRun, FlowStepCompletionResult, FlowStepDispatchResult, FlowStepFailureResult, FlowValidationResult, FlowWorkflow, FlowWorkflowDetail, ListResponse } from '~/types/flow'
 
 export const useFlowApi = () => {
   const config = useRuntimeConfig()
@@ -11,6 +11,11 @@ export const useFlowApi = () => {
 
   const getRuns = async () => {
     const data = await $fetch<ListResponse<FlowRun>>('/runs', { baseURL })
+    return data.items ?? []
+  }
+
+  const getApprovals = async () => {
+    const data = await $fetch<ListResponse<FlowApprovalRecord>>('/approvals', { baseURL })
     return data.items ?? []
   }
 
@@ -80,6 +85,7 @@ export const useFlowApi = () => {
     getWorkflows,
     getWorkflow,
     getRuns,
+    getApprovals,
     getRun,
     advanceRun,
     dispatchRunStep,
