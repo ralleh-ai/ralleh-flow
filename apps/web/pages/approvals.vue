@@ -12,9 +12,29 @@ const { data: approvals, pending, error, refresh } = await useAsyncData('flow-ap
 const items = computed(() => approvals.value ?? [])
 const pendingItems = computed(() => items.value.filter((approval) => approval.status === 'pending'))
 const resumableItems = computed(() => items.value.filter((approval) => approval.status === 'changes_requested'))
+const rejectedItems = computed(() => items.value.filter((approval) => approval.status === 'rejected'))
 const busyApprovalId = ref<string | null>(null)
 const actionError = ref<string>('')
 const rationaleDrafts = reactive<Record<string, string>>({})
+
+const approvalAttentionSummary = computed(() => {
+  if (pendingItems.value.length > 0) {
+    return 'Governance is actively shaping live runs. Resolve pending gates before launching more work that depends on the same operational surface.'
+  }
+  if (resumableItems.value.length > 0) {
+    return 'Rework has already been requested. Resume only when the operator believes the run is ready to face the same gate again.'
+  }
+  if (rejectedItems.value.length > 0) {
+    return 'Prior governance has already stopped some runs. Review those outcomes before repeating the same mission pattern.'
+  }
+  return 'No urgent governance pressure from current API truth.'
+})
+
+const approvalAttentionFacts = computed(() => [
+  { label: 'Pending gates', value: String(pendingItems.value.length), tone: pendingItems.value.length ? 'warn' : 'ok' },
+  { label: 'Rework waiting', value: String(resumableItems.value.length), tone: resumableItems.value.length ? 'warn' : 'ok' },
+  { label: 'Rejected', value: String(rejectedItems.value.length), tone: rejectedItems.value.length ? 'danger' : 'default' }
+] as const)
 
 const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' | 'reject' | 'request-changes' | 'resume') => {
   const rationale = (rationaleDrafts[approval.id] ?? '').trim()
@@ -65,6 +85,14 @@ const decisionContext = (approval: FlowApprovalRecord) => {
   if (approval.decidedAt) parts.push(new Date(approval.decidedAt).toLocaleString())
   return parts.join(' · ')
 }
+
+const approvalNextMove = (approval: FlowApprovalRecord) => {
+  if (approval.status === 'pending') return 'Open the linked run mission view, check current step and evidence, then decide deliberately.'
+  if (approval.status === 'changes_requested') return 'Review the linked run for rework evidence, then resume only when the gate should reopen.'
+  if (approval.status === 'rejected') return 'Use the linked run mission view to understand where the mission stopped and whether a new run is safer than resuming.'
+  if (approval.status === 'approved') return 'Governance has cleared this gate. The linked run shows what happened next.'
+  return 'Use the linked run mission view for operational context.'
+}
 </script>
 
 <template>
@@ -101,6 +129,21 @@ const decisionContext = (approval: FlowApprovalRecord) => {
       </div>
     </section>
 
+    <AttentionContextCard
+      title="Where governance pressure is coming from"
+      :summary="approvalAttentionSummary"
+      :facts="approvalAttentionFacts"
+      :bullets="[
+        'Every approval row should lead cleanly to its run mission view; decisions without mission context are theater.',
+        'Use operator notes to make the human decision legible when someone reviews the mission later.',
+        'Resume is not forgiveness—it is a deliberate choice to reopen the same gate after rework.'
+      ]"
+      :links="[
+        { label: 'Open cockpit', to: '/' },
+        { label: 'Open workflow packages', to: '/workflows' }
+      ]"
+    />
+
     <section class="rf-card min-w-0">
       <div class="flex items-center justify-between gap-4 border-b border-[color:var(--rf-border)] pb-3">
         <div>
@@ -121,78 +164,96 @@ const decisionContext = (approval: FlowApprovalRecord) => {
         No approval requests have been recorded yet.
       </div>
 
-      <div v-else class="mt-4">
-        <div v-if="actionError" class="mb-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+      <div v-else class="mt-4 space-y-4">
+        <div v-if="actionError" class="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-100">
           {{ actionError }}
         </div>
 
-        <div class="overflow-x-auto">
-        <table class="min-w-full text-sm">
-          <thead class="text-left text-[color:var(--rf-muted)]">
-            <tr>
-              <th class="py-2 pr-4">Run</th>
-              <th class="py-2 pr-4">Gate</th>
-              <th class="py-2 pr-4">State</th>
-              <th class="py-2 pr-4">Policy</th>
-              <th class="py-2 pr-4">Requested by</th>
-              <th class="py-2 pr-4">Requested at</th>
-              <th class="py-2 pr-4">Evidence manifest</th>
-              <th class="py-2 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="approval in items" :key="approval.id" class="border-t border-[color:var(--rf-border)]/70 align-top">
-              <td class="py-3 pr-4 font-medium">
-                <NuxtLink :to="`/runs/${approval.runId}`" class="hover:text-cyan-300">{{ approval.runId }}</NuxtLink>
-              </td>
-              <td class="py-3 pr-4">
-                <div class="font-medium">{{ approval.stepId }}</div>
-                <div class="mt-1 text-xs text-[color:var(--rf-muted)]">{{ approval.kind }}</div>
-              </td>
-              <td class="py-3 pr-4">
+        <article
+          v-for="approval in items"
+          :key="approval.id"
+          class="rounded-[1.6rem] border border-[color:var(--rf-border)] bg-black/10 p-5"
+        >
+          <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-lg font-semibold">{{ approval.stepId }}</h3>
                 <span :class="badgeTone(approval.status)">{{ approval.status }}</span>
-                <div v-if="decisionContext(approval)" class="mt-2 text-xs text-[color:var(--rf-muted)]">{{ decisionContext(approval) }}</div>
-                <div v-if="approval.rationale" class="mt-2 max-w-xs whitespace-pre-line text-xs text-white/85">{{ approval.rationale }}</div>
-              </td>
-              <td class="py-3 pr-4">{{ approval.approverPolicy || '—' }}</td>
-              <td class="py-3 pr-4">{{ approval.requestedBy || '—' }}</td>
-              <td class="py-3 pr-4 text-xs text-[color:var(--rf-muted)]">{{ new Date(approval.createdAt).toLocaleString() }}</td>
-              <td class="py-3 pr-4 text-xs text-[color:var(--rf-muted)]">
-                <div class="font-medium text-white/90">{{ manifestName(approval) }}</div>
-                <div v-if="approval.evidenceManifest" class="mt-1 break-all">{{ approval.evidenceManifest }}</div>
-              </td>
-              <td class="py-3 text-right">
-                <div v-if="approval.status === 'pending'" class="min-w-[18rem]">
-                  <label class="mb-2 block text-left text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Operator note</label>
-                  <textarea
-                    v-model="rationaleDrafts[approval.id]"
-                    rows="3"
-                    class="mb-3 w-full rounded-xl border border-[color:var(--rf-border)] bg-black/20 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-400/60"
-                    placeholder="Capture why you are approving, rejecting, or requesting changes."
-                  />
-                  <div class="flex justify-end gap-2">
-                    <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'reject')">
-                      Reject
-                    </button>
-                    <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'request-changes')">
-                      Request changes
-                    </button>
-                    <button class="rf-button" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'approve')">
-                      <span v-if="busyApprovalId === approval.id">Working…</span>
-                      <span v-else>Approve</span>
-                    </button>
-                  </div>
+                <span class="rf-badge">{{ approval.kind }}</span>
+                <span v-if="approval.approverPolicy" class="rf-badge">{{ approval.approverPolicy }}</span>
+              </div>
+
+              <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[color:var(--rf-muted)]">
+                <span>Run {{ approval.runId }}</span>
+                <span>Requested by {{ approval.requestedBy || '—' }}</span>
+                <span>{{ new Date(approval.createdAt).toLocaleString() }}</span>
+              </div>
+
+              <p class="mt-4 text-sm text-white/90">{{ approvalNextMove(approval) }}</p>
+
+              <div class="mt-4 grid gap-3 md:grid-cols-2">
+                <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                  <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Decision context</div>
+                  <p class="mt-2 text-sm text-[color:var(--rf-muted)]">{{ decisionContext(approval) || 'No decision recorded yet.' }}</p>
+                  <p v-if="approval.rationale" class="mt-3 whitespace-pre-line text-sm text-white/85">{{ approval.rationale }}</p>
                 </div>
-                <button v-else-if="approval.status === 'changes_requested'" class="rf-button" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'resume')">
+                <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                  <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Evidence manifest</div>
+                  <p class="mt-2 text-sm text-white/90">{{ manifestName(approval) }}</p>
+                  <p v-if="approval.evidenceManifest" class="mt-2 break-all text-xs text-[color:var(--rf-muted)]">{{ approval.evidenceManifest }}</p>
+                  <p v-else class="mt-2 text-xs text-[color:var(--rf-muted)]">No manifest path recorded yet.</p>
+                </div>
+              </div>
+            </div>
+
+            <div class="xl:w-[22rem] xl:min-w-[22rem]">
+              <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Linked mission view</div>
+                <p class="mt-2 text-sm text-[color:var(--rf-muted)]">
+                  Open the run mission view to inspect current step, timeline, worker state, and Git isolation before changing governance state.
+                </p>
+                <NuxtLink :to="`/runs/${approval.runId}`" class="rf-button mt-4 w-full justify-center">Open run mission</NuxtLink>
+              </div>
+
+              <div v-if="approval.status === 'pending'" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                <label class="mb-2 block text-left text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Operator note</label>
+                <textarea
+                  v-model="rationaleDrafts[approval.id]"
+                  rows="4"
+                  class="w-full rounded-xl border border-[color:var(--rf-border)] bg-black/20 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-400/60"
+                  placeholder="Capture why you are approving, rejecting, or requesting changes."
+                />
+                <div class="mt-3 flex flex-wrap justify-end gap-2">
+                  <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'reject')">
+                    Reject
+                  </button>
+                  <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'request-changes')">
+                    Request changes
+                  </button>
+                  <button class="rf-button" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'approve')">
+                    <span v-if="busyApprovalId === approval.id">Working…</span>
+                    <span v-else>Approve</span>
+                  </button>
+                </div>
+              </div>
+
+              <div v-else-if="approval.status === 'changes_requested'" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Resume gate</div>
+                <p class="mt-2 text-sm text-[color:var(--rf-muted)]">
+                  Reopen this approval only after reviewing the linked mission and confirming the requested rework actually happened.
+                </p>
+                <button class="rf-button mt-4 w-full justify-center" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'resume')">
                   <span v-if="busyApprovalId === approval.id">Working…</span>
                   <span v-else>Resume approval</span>
                 </button>
-                <span v-else class="text-xs text-[color:var(--rf-muted)]">Decision recorded</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        </div>
+              </div>
+
+              <div v-else class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4 text-sm text-[color:var(--rf-muted)]">
+                Decision already recorded. Use the linked mission view to understand the downstream effect on the run timeline.
+              </div>
+            </div>
+          </div>
+        </article>
       </div>
     </section>
   </div>

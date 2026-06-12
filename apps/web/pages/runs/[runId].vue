@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import type { FlowHandoffRecord, FlowRun, FlowStepRecord, FlowTimelineEvent, FlowWorkflowDetail, FlowWorkflowStep } from '~/types/flow'
+import type { FlowApprovalRecord, FlowHandoffRecord, FlowRun, FlowStepRecord, FlowTimelineEvent, FlowWorkflowDetail, FlowWorkflowStep } from '~/types/flow'
 
 type RunPagePayload = {
   run: FlowRun | null
   workflow: FlowWorkflowDetail | null
+  approvals: FlowApprovalRecord[]
 }
 
 type StepMissionState = 'completed' | 'running' | 'awaiting_approval' | 'changes_requested' | 'failed' | 'queued'
@@ -43,15 +44,22 @@ const { data, pending, refresh } = await useAsyncData<RunPagePayload>(
         workflowError.value = err?.data?.error || err?.message || 'Could not load workflow context'
       }
 
-      return { run, workflow }
+      let approvals: FlowApprovalRecord[] = []
+      try {
+        approvals = await api.getApprovals()
+      } catch {
+        approvals = []
+      }
+
+      return { run, workflow, approvals }
     } catch (err: any) {
       loadError.value = err?.data?.error || err?.message || 'Could not load run'
-      return { run: null, workflow: null }
+      return { run: null, workflow: null, approvals: [] }
     }
   },
   {
     watch: [runId],
-    default: () => ({ run: null, workflow: null })
+    default: () => ({ run: null, workflow: null, approvals: [] })
   }
 )
 
@@ -60,12 +68,14 @@ const run = computed<FlowRun | null>({
   set: (value) => {
     data.value = {
       run: value,
-      workflow: data.value?.workflow ?? null
+      workflow: data.value?.workflow ?? null,
+      approvals: data.value?.approvals ?? []
     }
   }
 })
 
 const workflow = computed(() => data.value?.workflow ?? null)
+const approvals = computed(() => data.value?.approvals ?? [])
 const timeline = computed(() => run.value?.timeline ?? [])
 const steps = computed(() => run.value?.steps ?? [])
 const handoffs = computed(() => run.value?.handoffs ?? [])
@@ -214,6 +224,90 @@ const activeWorkerSummary = computed(() => {
     return 'Approval gate is the active operational focus.'
   }
   return 'No active worker claim recorded.'
+})
+
+const linkedApproval = computed<FlowApprovalRecord | null>(() => {
+  if (!run.value) return null
+  const runApprovals = approvals.value.filter((approval) => approval.runId === run.value?.id)
+  const currentStepId = run.value.currentStep
+
+  const exact = runApprovals.find((approval) => approval.stepId === currentStepId && ['pending', 'changes_requested', 'approved', 'rejected'].includes(approval.status))
+  if (exact) return exact
+
+  return runApprovals[0] || null
+})
+
+const governanceSummary = computed(() => {
+  if (linkedApproval.value?.status === 'pending') {
+    return 'This run is currently blocked by a live approval gate. The governance queue is the next place where a human decision changes the system.'
+  }
+  if (linkedApproval.value?.status === 'changes_requested') {
+    return 'Governance already asked for rework. Confirm the rework in mission history, then resume the gate deliberately.'
+  }
+  if (linkedApproval.value?.status === 'rejected') {
+    return 'Governance rejected this gate. Review the rationale before repeating the same run pattern.'
+  }
+  if (approvalEvents.value.length > 0) {
+    return 'This run has governance history. Use the queue when you need cross-run approval context.'
+  }
+  return 'No linked approval record is visible from current API truth.'
+})
+
+const governanceFacts = computed(() => {
+  const facts = [] as { label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }[]
+  if (linkedApproval.value) {
+    facts.push({
+      label: 'Approval state',
+      value: linkedApproval.value.status,
+      tone: linkedApproval.value.status === 'rejected' ? 'danger' : linkedApproval.value.status === 'pending' || linkedApproval.value.status === 'changes_requested' ? 'warn' : linkedApproval.value.status === 'approved' ? 'ok' : 'default'
+    })
+    facts.push({ label: 'Gate', value: linkedApproval.value.stepId })
+  }
+  facts.push({ label: 'Approval events', value: String(approvalEvents.value.length), tone: approvalEvents.value.length ? 'warn' : 'default' })
+  return facts
+})
+
+const approvalContextBullets = computed(() => {
+  if (linkedApproval.value?.status === 'pending') {
+    return [
+      'Open the governance queue when you want the dedicated operator controls for this gate.',
+      'Use the mission timeline here to validate whether the evidence and current step match the requested approval.',
+      'Do not approve from memory; this mission view exists so the operator can inspect live context first.'
+    ]
+  }
+  if (linkedApproval.value?.status === 'changes_requested') {
+    return [
+      'The run is paused for rework, not silently resumed.',
+      'Check recent timeline and step records for evidence that the requested changes actually happened.',
+      'Resume only when reopening the same gate is the right operational move.'
+    ]
+  }
+  if (linkedApproval.value?.status === 'rejected') {
+    return [
+      'A rejection is part of mission history, not an implementation detail.',
+      'Review rationale and timeline before creating another run that repeats the same failure pattern.'
+    ]
+  }
+  if (approvalEvents.value.length > 0) {
+    return [
+      'This run has governance history even if no gate is active right now.',
+      'Use the queue for broader cross-run governance context when you need it.'
+    ]
+  }
+  return [
+    'No approval object is linked from current API truth.',
+    'If a gate should exist here, that gap belongs in the API contract—not in UI guesswork.'
+  ]
+})
+
+const approvalDecisionLabel = computed(() => {
+  const approval = linkedApproval.value
+  if (!approval) return 'No linked decision record'
+
+  const parts: string[] = []
+  if (approval.decidedBy) parts.push(`Decision by ${approval.decidedBy}`)
+  if (approval.decidedAt) parts.push(new Date(approval.decidedAt).toLocaleString())
+  return parts.join(' · ') || 'Decision not recorded yet'
 })
 
 const advanceRun = async () => {
@@ -427,22 +521,16 @@ const failStep = async () => {
           </p>
         </section>
 
-        <section class="rf-card">
-          <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Approval pressure</div>
-          <p class="mt-3 text-sm text-[color:var(--rf-muted)]" v-if="approvalEvents.length === 0">
-            No approval transitions recorded on the run timeline yet.
-          </p>
-          <ul v-else class="mt-3 space-y-3 text-sm text-[color:var(--rf-muted)]">
-            <li v-for="event in approvalEvents.slice().reverse().slice(0, 4)" :key="`${event.at}-${event.type}`" class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3">
-              <div class="flex items-center justify-between gap-3">
-                <strong class="text-white/90">{{ event.type }}</strong>
-                <span class="text-xs">{{ new Date(event.at).toLocaleString() }}</span>
-              </div>
-              <p class="mt-2 text-xs">{{ event.detail }}</p>
-            </li>
-          </ul>
-          <NuxtLink to="/approvals" class="mt-4 inline-flex text-sm text-cyan-200 hover:text-cyan-100">Open governance queue →</NuxtLink>
-        </section>
+        <AttentionContextCard
+          title="Governance handoff for this mission"
+          :summary="governanceSummary"
+          :facts="governanceFacts"
+          :bullets="approvalContextBullets"
+          :links="[
+            { label: 'Open governance queue', to: '/approvals' },
+            ...(workflow?.id ? [{ label: 'Open workflow package', to: `/workflows/${workflow.id}` }] : [])
+          ]"
+        />
       </aside>
 
       <div class="space-y-6 min-w-0">
@@ -518,6 +606,29 @@ const failStep = async () => {
       </div>
 
       <aside class="space-y-6">
+        <section v-if="linkedApproval" class="rf-card">
+          <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Linked approval record</div>
+          <h2 class="mt-2 text-lg font-semibold">Governance object in context</h2>
+          <div class="mt-4 space-y-3 text-sm text-[color:var(--rf-muted)]">
+            <div>
+              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">State</div>
+              <div class="mt-1 flex flex-wrap items-center gap-2">
+                <span :class="statusTone(linkedApproval.status)">{{ linkedApproval.status }}</span>
+                <span class="rf-badge">{{ linkedApproval.stepId }}</span>
+              </div>
+            </div>
+            <div>
+              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Decision record</div>
+              <p class="mt-1">{{ approvalDecisionLabel }}</p>
+              <p v-if="linkedApproval.rationale" class="mt-2 whitespace-pre-line text-white/85">{{ linkedApproval.rationale }}</p>
+            </div>
+            <div>
+              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Evidence manifest</div>
+              <p class="mt-1 break-all text-xs text-white/90">{{ linkedApproval.evidenceManifest || 'Not recorded yet' }}</p>
+            </div>
+          </div>
+        </section>
+
         <section class="rf-card">
           <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Agent activity</div>
           <h2 class="mt-2 text-lg font-semibold">Dispatch handoffs</h2>
