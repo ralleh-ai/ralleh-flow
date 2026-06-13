@@ -9,6 +9,12 @@ type RunPagePayload = {
 
 type StepMissionState = 'completed' | 'running' | 'awaiting_approval' | 'changes_requested' | 'failed' | 'queued'
 
+const emptyRunPayload = (): RunPagePayload => ({
+  run: null,
+  workflow: null,
+  approvals: []
+})
+
 const route = useRoute()
 const api = useFlowApi()
 
@@ -26,10 +32,10 @@ const resuming = ref(false)
 
 const { data, pending, refresh } = await useAsyncData<RunPagePayload>(
   () => `flow-run-${runId.value}`,
-  async () => {
+  async (): Promise<RunPagePayload> => {
     if (!runId.value) {
       loadError.value = 'Missing run id'
-      return { run: null, workflow: null }
+      return emptyRunPayload()
     }
 
     try {
@@ -54,28 +60,25 @@ const { data, pending, refresh } = await useAsyncData<RunPagePayload>(
       return { run, workflow, approvals }
     } catch (err: any) {
       loadError.value = err?.data?.error || err?.message || 'Could not load run'
-      return { run: null, workflow: null, approvals: [] }
+      return emptyRunPayload()
     }
   },
   {
     watch: [runId],
-    default: () => ({ run: null, workflow: null, approvals: [] })
+    default: emptyRunPayload
   }
 )
 
-const run = computed<FlowRun | null>({
-  get: () => data.value?.run ?? null,
-  set: (value) => {
-    data.value = {
-      run: value,
-      workflow: data.value?.workflow ?? null,
-      approvals: data.value?.approvals ?? []
-    }
-  }
-})
+const run = ref<FlowRun | null>(null)
+const workflow = ref<FlowWorkflowDetail | null>(null)
+const approvals = ref<FlowApprovalRecord[]>([])
 
-const workflow = computed(() => data.value?.workflow ?? null)
-const approvals = computed(() => data.value?.approvals ?? [])
+watch(data, (payload) => {
+  const next = payload ?? emptyRunPayload()
+  run.value = next.run
+  workflow.value = next.workflow
+  approvals.value = next.approvals
+}, { immediate: true })
 const timeline = computed(() => run.value?.timeline ?? [])
 const steps = computed(() => run.value?.steps ?? [])
 const handoffs = computed(() => run.value?.handoffs ?? [])

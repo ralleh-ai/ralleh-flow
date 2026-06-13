@@ -115,8 +115,17 @@ const createdRunSummary = computed(() => {
   return `Run created with status ${createdRun.value.status}. Open the mission view for current operational truth.`
 })
 
-const createdRunFacts = computed(() => {
-  if (!createdRun.value) return [] as { label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }[]
+const createdRunFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => {
+  if (!createdRun.value) return []
+
+  const statusTone: 'default' | 'ok' | 'warn' | 'danger' = createdRun.value.status === 'running'
+    ? 'ok'
+    : ['pending', 'waiting_for_approval', 'changes_requested'].includes(createdRun.value.status)
+      ? 'warn'
+      : ['failed', 'cancelled', 'rejected'].includes(createdRun.value.status)
+        ? 'danger'
+        : 'default'
+
   return [
     {
       label: 'Run',
@@ -126,13 +135,7 @@ const createdRunFacts = computed(() => {
     {
       label: 'Status',
       value: createdRun.value.status,
-      tone: createdRun.value.status === 'running'
-        ? 'ok'
-        : ['pending', 'waiting_for_approval', 'changes_requested'].includes(createdRun.value.status)
-          ? 'warn'
-          : ['failed', 'cancelled', 'rejected'].includes(createdRun.value.status)
-            ? 'danger'
-            : 'default'
+      tone: statusTone
     },
     {
       label: 'Current step',
