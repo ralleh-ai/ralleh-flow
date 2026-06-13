@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type { FlowApprovalRecord, FlowRun, FlowWorkflow } from '~/types/flow'
+import type { OperationalFact } from '~/types/ui'
+import OperationalFactGrid from '~/components/operations/OperationalFactGrid.vue'
 
 const decidedBy = 'operator'
 const api = useFlowApi()
@@ -71,7 +73,7 @@ const approvalAttentionSummary = computed(() => {
   return 'No urgent governance pressure from current API truth.'
 })
 
-const approvalAttentionFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => [
+const approvalAttentionFacts = computed<OperationalFact[]>(() => [
   { label: 'Pending gates', value: String(pendingItems.value.length), tone: pendingItems.value.length ? 'warn' : 'ok' },
   { label: 'Rework waiting', value: String(resumableItems.value.length), tone: resumableItems.value.length ? 'warn' : 'ok' },
   { label: 'Rejected', value: String(rejectedItems.value.length), tone: rejectedItems.value.length ? 'danger' : 'default' },
@@ -178,7 +180,7 @@ const trustGapText = (approval: FlowApprovalRecord) => {
   return 'Evidence manifest is recorded, but diff/artifact preview still needs deeper backend exposure.'
 }
 
-const approvalFacts = (approval: FlowApprovalRecord): Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }> => {
+const approvalFacts = (approval: FlowApprovalRecord): OperationalFact[] => {
   const run = linkedRun(approval)
   const workflow = linkedWorkflow(approval)
 
@@ -293,13 +295,8 @@ const approvalFacts = (approval: FlowApprovalRecord): Array<{ label: string, val
 
               <p class="mt-4 text-sm text-white/90">{{ approvalNextMove(approval) }}</p>
 
-              <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <div v-for="fact in approvalFacts(approval)" :key="`${approval.id}-${fact.label}`" class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3">
-                  <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">{{ fact.label }}</div>
-                  <div class="mt-2 text-sm font-medium" :class="fact.tone === 'danger' ? 'text-rose-200' : fact.tone === 'warn' ? 'text-amber-200' : fact.tone === 'ok' ? 'text-emerald-200' : 'text-white/90'">
-                    {{ fact.value }}
-                  </div>
-                </div>
+              <div class="mt-4">
+                <OperationalFactGrid :facts="approvalFacts(approval)" :columns="4" />
               </div>
 
               <div class="mt-4 grid gap-3 md:grid-cols-2">

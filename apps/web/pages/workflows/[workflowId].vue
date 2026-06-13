@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { FlowDryRunResult, FlowRun, FlowTimelineEvent, FlowValidationResult, FlowWorkflowDetail, FlowWorkflowStep } from '~/types/flow'
+import type { OperationalFact } from '~/types/ui'
 import AttentionContextCard from '~/components/operations/AttentionContextCard.vue'
+import OperationalFactGrid from '~/components/operations/OperationalFactGrid.vue'
 
 const route = useRoute()
 const api = useFlowApi()
@@ -77,6 +79,20 @@ const completedRunCount = computed(() => workflowRuns.value.filter((run) => run.
 const agentStepCount = computed(() => steps.value.filter((step) => !!step.agent).length)
 const approvalGateCount = computed(() => steps.value.filter((step) => !!step.approverPolicy || step.kind === 'approval').length)
 
+const packageOverviewFacts = computed<OperationalFact[]>(() => [
+  { label: 'Live runs', value: String(liveRunCount.value), tone: liveRunCount.value ? 'ok' : 'default' },
+  { label: 'Approval pressure', value: String(approvalPressureCount.value), tone: approvalPressureCount.value ? 'warn' : 'default' },
+  { label: 'Completed runs', value: String(completedRunCount.value), tone: completedRunCount.value ? 'ok' : 'default' },
+  { label: 'Stalled runs', value: String(stalledRunCount.value), tone: stalledRunCount.value ? 'danger' : 'default' }
+])
+
+const packageIdentityFacts = computed<OperationalFact[]>(() => [
+  { label: 'Workflow ID', value: workflow.value?.id || 'unknown', detail: 'Current package identifier from the API.' },
+  { label: 'Definition path', value: workflow.value?.path || 'unknown', detail: 'Git-tracked source for this package definition.' },
+  { label: 'Agent steps', value: String(agentStepCount.value), detail: 'Execution steps assigned to named operational specialists.' },
+  { label: 'Approval gates', value: String(approvalGateCount.value), detail: 'Human decision checkpoints encoded in the package.' }
+])
+
 watch(
   variables,
   (nextVariables) => {
@@ -125,7 +141,7 @@ const dependencySignals = computed(() => {
   })
 })
 
-const variableReadinessFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => [
+const variableReadinessFacts = computed<OperationalFact[]>(() => [
   { label: 'Required missing', value: String(missingRequiredVariables.value.length), tone: missingRequiredVariables.value.length ? 'warn' : 'ok' },
   { label: 'Dependency signals', value: String(dependencySignals.value.length), tone: dependencySignals.value.length ? 'warn' : 'default' },
   { label: 'Validation', value: validationResult.value ? (validationResult.value.valid ? 'Pass' : 'Issues') : 'Not run', tone: validationResult.value ? (validationResult.value.valid ? 'ok' : 'warn') : 'default' },
@@ -141,7 +157,7 @@ const createdRunSummary = computed(() => {
   return `Run created with status ${createdRun.value.status}. Open the mission view for current operational truth.`
 })
 
-const createdRunFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => {
+const createdRunFacts = computed<OperationalFact[]>(() => {
   if (!createdRun.value) return []
 
   const statusTone: 'default' | 'ok' | 'warn' | 'danger' = createdRun.value.status === 'running'
@@ -351,43 +367,13 @@ const createRun = async () => {
             </div>
           </div>
 
-          <div class="mt-5 grid gap-3 md:grid-cols-4">
-            <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3">
-              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Live runs</div>
-              <div class="mt-2 text-2xl font-semibold">{{ liveRunCount }}</div>
-            </div>
-            <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3">
-              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Approval pressure</div>
-              <div class="mt-2 text-2xl font-semibold">{{ approvalPressureCount }}</div>
-            </div>
-            <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3">
-              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Completed runs</div>
-              <div class="mt-2 text-2xl font-semibold">{{ completedRunCount }}</div>
-            </div>
-            <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3">
-              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Stalled runs</div>
-              <div class="mt-2 text-2xl font-semibold">{{ stalledRunCount }}</div>
-            </div>
+          <div class="mt-5">
+            <OperationalFactGrid :facts="packageOverviewFacts" :columns="4" />
           </div>
 
-          <dl class="mt-5 grid gap-3 text-sm md:grid-cols-2">
-            <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
-              <dt class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Workflow ID</dt>
-              <dd class="mt-2 font-mono text-xs text-white/90">{{ workflow.id }}</dd>
-            </div>
-            <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
-              <dt class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Definition path</dt>
-              <dd class="mt-2 break-all font-mono text-xs text-white/90">{{ workflow.path }}</dd>
-            </div>
-            <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
-              <dt class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Agent steps</dt>
-              <dd class="mt-2 text-sm text-white/90">{{ agentStepCount }}</dd>
-            </div>
-            <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
-              <dt class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Approval gates</dt>
-              <dd class="mt-2 text-sm text-white/90">{{ approvalGateCount }}</dd>
-            </div>
-          </dl>
+          <div class="mt-5">
+            <OperationalFactGrid :facts="packageIdentityFacts" :columns="4" />
+          </div>
         </article>
 
         <AttentionContextCard

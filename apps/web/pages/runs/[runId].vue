@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type { FlowApprovalRecord, FlowHandoffRecord, FlowRun, FlowStepRecord, FlowTimelineEvent, FlowWorkflowDetail, FlowWorkflowStep } from '~/types/flow'
+import type { OperationalFact } from '~/types/ui'
+import OperationalFactGrid from '~/components/operations/OperationalFactGrid.vue'
 
 type RunPagePayload = {
   run: FlowRun | null
@@ -248,8 +250,8 @@ const dispatchReadinessSummary = computed(() => {
   return `Active handoff is ${activeHandoff.value.status}. Operator should inspect the mission history before forcing the next move.`
 })
 
-const dispatchReadinessFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => {
-  const facts: Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }> = [
+const dispatchReadinessFacts = computed<OperationalFact[]>(() => {
+  const facts: OperationalFact[] = [
     {
       label: 'Run state',
       value: run.value?.status || 'unknown',
@@ -423,6 +425,101 @@ const approvalDecisionLabel = computed(() => {
   if (approval.decidedAt) parts.push(new Date(approval.decidedAt).toLocaleString())
   return parts.join(' · ') || 'Decision not recorded yet'
 })
+
+const evidenceManifestLabel = computed(() => {
+  const manifest = linkedApproval.value?.evidenceManifest
+  if (!manifest) return 'Not recorded yet'
+  const parts = manifest.split('/')
+  return parts[parts.length - 1] || manifest
+})
+
+const evidenceTruthSummary = computed(() => {
+  if (linkedApproval.value?.evidenceManifest) {
+    return 'This mission has a recorded evidence manifest path, plus timeline, handoff, checkpoint, and Git-isolation context. Diff and artifact registry exposure still need deeper backend support.'
+  }
+  if (linkedApproval.value) {
+    return 'A governance object exists, but no evidence manifest path is recorded yet. The operator should rely more heavily on mission progression, Git isolation, and recent handoff/checkpoint truth.'
+  }
+  return 'No linked approval evidence object is visible yet. Timeline, handoff, checkpoint, and Git context are still the current trust surface.'
+})
+
+const evidenceBundleFacts = computed<OperationalFact[]>(() => [
+  {
+    label: 'Approval state',
+    value: linkedApproval.value?.status || 'No linked approval',
+    tone: linkedApproval.value?.status === 'rejected'
+      ? 'danger'
+      : linkedApproval.value?.status === 'pending' || linkedApproval.value?.status === 'changes_requested'
+        ? 'warn'
+        : linkedApproval.value?.status === 'approved'
+          ? 'ok'
+          : 'default',
+    detail: linkedApproval.value ? `Gate ${linkedApproval.value.stepId}` : 'No governance object linked from the current run payload.'
+  },
+  {
+    label: 'Evidence manifest',
+    value: evidenceManifestLabel.value,
+    tone: linkedApproval.value?.evidenceManifest ? 'ok' : 'warn',
+    detail: linkedApproval.value?.evidenceManifest || 'Manifest path has not been persisted yet.'
+  },
+  {
+    label: 'Decision record',
+    value: approvalDecisionLabel.value,
+    detail: linkedApproval.value?.rationale || 'No written rationale recorded in the current payload.'
+  }
+])
+
+const artifactVisibilityFacts = computed<OperationalFact[]>(() => [
+  {
+    label: 'Timeline events',
+    value: String(timeline.value.length),
+    tone: timeline.value.length ? 'ok' : 'default',
+    detail: latestEvent.value ? `${latestEvent.value.type} at ${new Date(latestEvent.value.at).toLocaleString()}` : 'No recorded event stream yet.'
+  },
+  {
+    label: 'Step checkpoints',
+    value: String(steps.value.length),
+    tone: steps.value.length ? 'ok' : 'default',
+    detail: recentCheckpoint.value ? `${recentCheckpoint.value.stepId} · ${recentCheckpoint.value.status}` : 'No persisted step checkpoints yet.'
+  },
+  {
+    label: 'Dispatch handoffs',
+    value: String(handoffs.value.length),
+    tone: handoffs.value.length ? 'ok' : 'default',
+    detail: recentHandoff.value ? `${recentHandoff.value.stepId} · ${recentHandoff.value.status}` : 'No persisted handoff records yet.'
+  },
+  {
+    label: 'Artifact registry',
+    value: 'Not exposed yet',
+    tone: 'warn',
+    detail: 'The API still does not expose artifact records, promotion state, or preview surfaces on this mission page.'
+  }
+])
+
+const gitTrustFacts = computed<OperationalFact[]>(() => [
+  {
+    label: 'Branch',
+    value: run.value?.branch || '—',
+    detail: 'Git branch isolation for this mission.'
+  },
+  {
+    label: 'Worktree',
+    value: run.value?.worktreePath || '—',
+    detail: 'Dedicated worktree path from current run payload.'
+  },
+  {
+    label: 'Current focus',
+    value: run.value?.currentStep || '—',
+    tone: run.value?.currentStep ? 'ok' : 'default',
+    detail: activeWorkerSummary.value
+  },
+  {
+    label: 'Session binding',
+    value: activeHandoff.value?.sessionId || 'Not recorded',
+    tone: activeHandoff.value?.sessionId ? 'ok' : 'warn',
+    detail: activeHandoff.value ? handoffSummary(activeHandoff.value) : 'No active handoff binding is visible right now.'
+  }
+])
 
 const advanceRun = async () => {
   if (!run.value || !canAdvance.value || advancing.value) return
@@ -670,6 +767,37 @@ const failStep = async () => {
       </aside>
 
       <div class="space-y-6 min-w-0">
+        <section class="rf-card min-w-0">
+          <div class="border-b border-[color:var(--rf-border)] pb-3">
+            <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Artifacts and evidence</div>
+            <h2 class="mt-2 text-xl font-semibold">Trust strip for this mission</h2>
+            <p class="mt-2 text-sm text-[color:var(--rf-muted)]">{{ evidenceTruthSummary }}</p>
+          </div>
+
+          <div class="mt-4 grid gap-4 xl:grid-cols-3">
+            <section class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Governance evidence</div>
+              <div class="mt-4">
+                <OperationalFactGrid :facts="evidenceBundleFacts" :columns="3" />
+              </div>
+            </section>
+
+            <section class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Artifact visibility</div>
+              <div class="mt-4">
+                <OperationalFactGrid :facts="artifactVisibilityFacts" :columns="2" />
+              </div>
+            </section>
+
+            <section class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Git and dispatch trust</div>
+              <div class="mt-4">
+                <OperationalFactGrid :facts="gitTrustFacts" :columns="2" />
+              </div>
+            </section>
+          </div>
+        </section>
+
         <section class="rf-card min-w-0">
           <div class="border-b border-[color:var(--rf-border)] pb-3">
             <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Operational progression</div>

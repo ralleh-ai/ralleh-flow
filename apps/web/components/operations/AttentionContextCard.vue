@@ -1,22 +1,13 @@
 <script setup lang="ts">
-type AttentionFact = {
-  label: string
-  value: string
-  tone?: 'default' | 'ok' | 'warn' | 'danger'
-}
-
-type AttentionLink = {
-  label: string
-  to: string
-}
+import type { OperationalFact, OperationalLink } from '~/types/ui'
 
 const props = withDefaults(defineProps<{
   kicker?: string
   title: string
   summary: string
-  facts?: AttentionFact[]
+  facts?: OperationalFact[]
   bullets?: string[]
-  links?: AttentionLink[]
+  links?: OperationalLink[]
 }>(), {
   kicker: 'Attention context',
   facts: () => [],
@@ -24,7 +15,7 @@ const props = withDefaults(defineProps<{
   links: () => []
 })
 
-const toneClass = (tone?: AttentionFact['tone']) => {
+const toneClass = (tone?: OperationalFact['tone']) => {
   if (tone === 'ok') return 'rf-badge rf-badge--ok'
   if (tone === 'warn') return 'rf-badge rf-badge--warn'
   if (tone === 'danger') return 'rf-badge rf-badge--danger'

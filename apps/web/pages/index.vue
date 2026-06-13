@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { FlowRun, FlowTimelineEvent } from '~/types/flow'
+import type { OperationalFact } from '~/types/ui'
 
 const api = useFlowApi()
 
@@ -72,7 +73,7 @@ const cockpitHeadline = computed(() => {
   return 'No immediate operator fire is visible. Use the quiet to inspect package readiness and launch deliberately.'
 })
 
-const cockpitFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => [
+const cockpitFacts = computed<OperationalFact[]>(() => [
   { label: 'Failed', value: String(failedRuns.value.length), tone: failedRuns.value.length ? 'danger' : 'ok' },
   { label: 'Approval blocked', value: String(approvalBlockedRuns.value.length), tone: approvalBlockedRuns.value.length ? 'warn' : 'ok' },
   { label: 'Rework', value: String(reworkRuns.value.length), tone: reworkRuns.value.length ? 'warn' : 'default' },
