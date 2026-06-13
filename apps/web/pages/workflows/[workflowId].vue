@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { FlowDryRunResult, FlowRun, FlowTimelineEvent, FlowValidationResult, FlowWorkflowDetail, FlowWorkflowStep } from '~/types/flow'
+import AttentionContextCard from '~/components/operations/AttentionContextCard.vue'
 
 const route = useRoute()
 const api = useFlowApi()
@@ -9,7 +10,7 @@ const workflowId = computed(() => String(route.params.workflowId || ''))
 const loadError = ref('')
 const submitPending = ref(false)
 const submitError = ref('')
-const createdRunId = ref('')
+const createdRun = ref<FlowRun | null>(null)
 const validationPending = ref(false)
 const validationError = ref('')
 const validationResult = ref<FlowValidationResult | null>(null)
@@ -102,6 +103,43 @@ const missingRequiredVariables = computed(() => {
 })
 
 const canCreateRun = computed(() => !!workflow.value && !submitPending.value && missingRequiredVariables.value.length === 0)
+
+const createdRunId = computed(() => createdRun.value?.id || '')
+
+const createdRunSummary = computed(() => {
+  if (!createdRun.value) return ''
+  if (createdRun.value.status === 'pending') return 'Run created and staged. The next operational move is to open the mission view and advance it deliberately.'
+  if (createdRun.value.status === 'running') return 'Run created and already executing. Open the mission view to monitor the active worker and current step.'
+  if (createdRun.value.status === 'waiting_for_approval') return 'Run created and paused at a governance gate. Open the mission view, then move to approvals if a human decision is now the blocker.'
+  if (createdRun.value.status === 'changes_requested') return 'Run created with rework pressure already recorded. Inspect the mission timeline before deciding how to continue.'
+  return `Run created with status ${createdRun.value.status}. Open the mission view for current operational truth.`
+})
+
+const createdRunFacts = computed(() => {
+  if (!createdRun.value) return [] as { label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }[]
+  return [
+    {
+      label: 'Run',
+      value: createdRun.value.id,
+      tone: 'ok'
+    },
+    {
+      label: 'Status',
+      value: createdRun.value.status,
+      tone: createdRun.value.status === 'running'
+        ? 'ok'
+        : ['pending', 'waiting_for_approval', 'changes_requested'].includes(createdRun.value.status)
+          ? 'warn'
+          : ['failed', 'cancelled', 'rejected'].includes(createdRun.value.status)
+            ? 'danger'
+            : 'default'
+    },
+    {
+      label: 'Current step',
+      value: createdRun.value.currentStep || '—'
+    }
+  ]
+})
 
 const packageHeadline = computed(() => {
   if (approvalPressureCount.value > 0) return 'This package currently has human decisions shaping its operational flow.'
@@ -198,7 +236,7 @@ const createRun = async () => {
 
   submitPending.value = true
   submitError.value = ''
-  createdRunId.value = ''
+  createdRun.value = null
 
   try {
     const variablesPayload = Object.fromEntries(
@@ -208,7 +246,7 @@ const createRun = async () => {
     )
 
     const run = await api.createRun(workflow.value.id, variablesPayload)
-    createdRunId.value = run.id
+    createdRun.value = run
     await refresh()
   } catch (err: any) {
     submitError.value = err?.data?.error || err?.message || 'Could not create run'
@@ -342,6 +380,23 @@ const createRun = async () => {
           </ol>
         </article>
 
+        <AttentionContextCard
+          v-if="createdRun"
+          kicker="Launch bridge"
+          title="Run created — go straight to the mission view"
+          :summary="createdRunSummary"
+          :facts="createdRunFacts"
+          :bullets="[
+            'The package page answered readiness and input questions. The mission view answers execution questions.',
+            'Use the new run page for worker state, step progression, Git isolation, and governance handoff.',
+            'If this run immediately enters approval pressure, jump from the mission view into the governance queue with context intact.'
+          ]"
+          :links="[
+            { label: 'Open new run mission', to: `/runs/${createdRunId}` },
+            { label: 'Open governance queue', to: '/approvals' }
+          ]"
+        />
+
         <article class="rf-card">
           <div class="border-b border-[color:var(--rf-border)] pb-3">
             <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Operational history</div>
@@ -365,6 +420,7 @@ const createRun = async () => {
                   <div class="flex flex-wrap items-center gap-2">
                     <strong>{{ run.id }}</strong>
                     <span :class="statusTone(run.status)">{{ run.status }}</span>
+                    <span v-if="createdRunId && run.id === createdRunId" class="rf-badge rf-badge--ok">new launch</span>
                   </div>
                   <div class="mt-2 text-sm text-[color:var(--rf-muted)]">Current step {{ run.currentStep || '—' }}</div>
                   <div class="mt-2 text-xs text-[color:var(--rf-muted)]">Latest change {{ runLastChangedLabel(run) }}</div>
@@ -445,8 +501,9 @@ const createRun = async () => {
 
           <p v-if="submitError" class="mt-3 text-sm text-rose-200">{{ submitError }}</p>
 
-          <div v-if="createdRunId" class="mt-3 rounded-xl border border-emerald-300/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
-            Run created: <NuxtLink :to="`/runs/${createdRunId}`" class="underline">{{ createdRunId }}</NuxtLink>
+          <div v-if="createdRun" class="mt-3 rounded-xl border border-emerald-300/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+            <p class="font-medium">Run created: <NuxtLink :to="`/runs/${createdRunId}`" class="underline">{{ createdRunId }}</NuxtLink></p>
+            <p class="mt-2 text-emerald-50/90">{{ createdRunSummary }}</p>
           </div>
         </section>
 
