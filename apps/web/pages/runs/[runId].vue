@@ -229,6 +229,117 @@ const activeWorkerSummary = computed(() => {
   return 'No active worker claim recorded.'
 })
 
+const activeHandoffLabel = computed(() => {
+  if (!activeHandoff.value) return 'No active handoff record for the current focus.'
+
+  const parts = [activeHandoff.value.status]
+  if (activeHandoff.value.agent) parts.push(activeHandoff.value.agent)
+  if (activeHandoff.value.sessionId) parts.push(activeHandoff.value.sessionId)
+  return parts.join(' · ')
+})
+
+const dispatchReadinessSummary = computed(() => {
+  if (!run.value) return 'Mission not loaded.'
+  if (run.value.status === 'pending') return 'The mission is staged. Advance the run before any step can be dispatched.'
+  if (!activeStep.value) return 'No active step is currently claiming execution focus.'
+  if (!activeHandoff.value) return 'The active step has no persisted handoff record yet, so there is nothing explicit to dispatch.'
+  if (activeHandoff.value.status === 'claimed') return 'The active step is claimed and ready for an explicit dispatch binding.'
+  if (activeHandoff.value.status === 'dispatched') return 'Dispatch already happened. Watch completion or failure instead of rebinding blindly.'
+  return `Active handoff is ${activeHandoff.value.status}. Operator should inspect the mission history before forcing the next move.`
+})
+
+const dispatchReadinessFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => {
+  const facts: Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }> = [
+    {
+      label: 'Run state',
+      value: run.value?.status || 'unknown',
+      tone: run.value?.status === 'failed'
+        ? 'danger'
+        : ['waiting_for_approval', 'changes_requested', 'pending'].includes(run.value?.status || '')
+          ? 'warn'
+          : run.value?.status === 'running'
+            ? 'ok'
+            : 'default'
+    },
+    {
+      label: 'Current focus',
+      value: run.value?.currentStep || '—'
+    }
+  ]
+
+  if (activeStep.value?.workerId) {
+    facts.push({ label: 'Worker', value: activeStep.value.workerId, tone: 'ok' })
+  }
+
+  if (activeHandoff.value) {
+    facts.push({
+      label: 'Handoff',
+      value: activeHandoff.value.status,
+      tone: activeHandoff.value.status === 'claimed'
+        ? 'warn'
+        : activeHandoff.value.status === 'dispatched'
+          ? 'ok'
+          : activeHandoff.value.status === 'failed'
+            ? 'danger'
+            : 'default'
+    })
+  }
+
+  return facts
+})
+
+const dispatchReadinessBullets = computed(() => {
+  if (run.value?.status === 'pending') {
+    return [
+      'The run itself must be advanced before dispatch becomes a meaningful action.',
+      'Pending is staging pressure, not worker activity.',
+      'Use the top-level advance control first.'
+    ]
+  }
+
+  if (!activeStep.value) {
+    return [
+      'No running step is claiming focus right now.',
+      'If this seems wrong, inspect the mission timeline for the last transition rather than guessing missing worker state.'
+    ]
+  }
+
+  if (!activeHandoff.value) {
+    return [
+      'A running step without a handoff record is an API truth gap, not a UI state to paper over.',
+      'Check the timeline and step records before attempting another control action.'
+    ]
+  }
+
+  if (activeHandoff.value.status === 'claimed') {
+    return [
+      'This is the cleanest moment to bind or dispatch the active step deliberately.',
+      'The session binding shown here is still a placeholder path pending deeper execution integration.',
+      'After dispatch, watch handoff and step checkpoints rather than assuming completion.'
+    ]
+  }
+
+  if (activeHandoff.value.status === 'dispatched') {
+    return [
+      'The active step already has a dispatch record.',
+      'Use completion or failure only when mission evidence supports it.',
+      'Repeated dispatch without context would be operator guesswork.'
+    ]
+  }
+
+  return [
+    'Inspect handoff and step records before forcing another transition.',
+    'This board exists to expose execution truth, not hide ambiguous state.'
+  ]
+})
+
+const recentHandoff = computed(() => handoffs.value.slice().sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())[0] || null)
+const recentCheckpoint = computed(() => steps.value.slice().sort((a, b) => {
+  const aTime = new Date(a.finishedAt || a.startedAt).getTime()
+  const bTime = new Date(b.finishedAt || b.startedAt).getTime()
+  return bTime - aTime
+})[0] || null)
+
 const linkedApproval = computed<FlowApprovalRecord | null>(() => {
   if (!run.value) return null
   const runApprovals = approvals.value.filter((approval) => approval.runId === run.value?.id)
@@ -421,7 +532,7 @@ const failStep = async () => {
         </div>
       </div>
 
-      <div class="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,1fr)]">
+      <div class="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_minmax(0,1fr)]">
         <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
           <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Attention required</div>
           <p class="mt-3 text-sm text-white/90">{{ attentionSummary }}</p>
@@ -444,6 +555,20 @@ const failStep = async () => {
             <div>
               <div class="text-xs text-[color:var(--rf-muted)]">Git branch</div>
               <div class="mt-1 break-all font-mono text-xs text-white/90">{{ run?.branch || '—' }}</div>
+            </div>
+          </div>
+        </div>
+        <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+          <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Dispatch posture</div>
+          <p class="mt-3 text-sm text-white/90">{{ dispatchReadinessSummary }}</p>
+          <div class="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <div class="text-xs text-[color:var(--rf-muted)]">Active handoff</div>
+              <div class="mt-1 text-sm font-medium">{{ activeHandoffLabel }}</div>
+            </div>
+            <div>
+              <div class="text-xs text-[color:var(--rf-muted)]">Last checkpoint</div>
+              <div class="mt-1 text-sm font-medium">{{ recentCheckpoint?.stepId || 'No step record yet' }}</div>
             </div>
           </div>
         </div>
@@ -523,6 +648,14 @@ const failStep = async () => {
             Controls remain explicit and limited to current API truth. No hidden automation is implied here.
           </p>
         </section>
+
+        <AttentionContextCard
+          title="Dispatch and worker truth"
+          :summary="dispatchReadinessSummary"
+          :facts="dispatchReadinessFacts"
+          :bullets="dispatchReadinessBullets"
+          :links="workflow?.id ? [{ label: 'Open workflow package', to: `/workflows/${workflow.id}` }] : []"
+        />
 
         <AttentionContextCard
           title="Governance handoff for this mission"
@@ -635,6 +768,12 @@ const failStep = async () => {
         <section class="rf-card">
           <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Agent activity</div>
           <h2 class="mt-2 text-lg font-semibold">Dispatch handoffs</h2>
+          <div v-if="recentHandoff" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3 text-sm text-[color:var(--rf-muted)]">
+            <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Most recent movement</div>
+            <p class="mt-2 text-white/90">{{ recentHandoff.stepId }} · {{ recentHandoff.status }}</p>
+            <p class="mt-1 text-xs">{{ handoffSummary(recentHandoff) }}</p>
+            <p class="mt-1 text-xs">Updated {{ new Date(recentHandoff.updatedAt || recentHandoff.createdAt).toLocaleString() }}</p>
+          </div>
           <p class="mt-2 text-sm text-[color:var(--rf-muted)]" v-if="handoffs.length === 0">
             No persisted handoff records yet.
           </p>
@@ -647,6 +786,7 @@ const failStep = async () => {
               <p class="mt-2 text-xs">{{ handoffSummary(handoff) }}</p>
               <p class="mt-1 text-xs">Worker {{ handoff.workerId }}</p>
               <p class="mt-1 text-xs">Created {{ new Date(handoff.createdAt).toLocaleString() }}</p>
+              <p class="mt-1 text-xs">Updated {{ new Date(handoff.updatedAt || handoff.createdAt).toLocaleString() }}</p>
               <p class="mt-1 text-xs" v-if="handoff.dispatchAttemptAt">Dispatch attempt {{ new Date(handoff.dispatchAttemptAt).toLocaleString() }}</p>
             </li>
           </ul>
@@ -655,6 +795,11 @@ const failStep = async () => {
         <section class="rf-card">
           <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Step records</div>
           <h2 class="mt-2 text-lg font-semibold">Execution checkpoints</h2>
+          <div v-if="recentCheckpoint" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3 text-sm text-[color:var(--rf-muted)]">
+            <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Latest checkpoint</div>
+            <p class="mt-2 text-white/90">{{ recentCheckpoint.stepId }} · {{ recentCheckpoint.status }}</p>
+            <p class="mt-1 text-xs">Worker {{ recentCheckpoint.workerId }}</p>
+          </div>
           <p class="mt-2 text-sm text-[color:var(--rf-muted)]" v-if="steps.length === 0">
             No persisted step records yet.
           </p>

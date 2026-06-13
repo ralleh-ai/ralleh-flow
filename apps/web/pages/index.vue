@@ -52,12 +52,72 @@ const runsByRecentChange = computed(() => [...runs.value].sort((a, b) => eventTi
 const attentionRuns = computed(() => runsByRecentChange.value.filter((run) => ['waiting_for_approval', 'changes_requested', 'failed', 'pending'].includes(run.status)))
 const liveRuns = computed(() => runsByRecentChange.value.filter((run) => ['running', 'pending'].includes(run.status)))
 const recentChangedRuns = computed(() => runsByRecentChange.value.slice(0, 8))
+const failedRuns = computed(() => attentionRuns.value.filter((run) => run.status === 'failed'))
+const approvalBlockedRuns = computed(() => attentionRuns.value.filter((run) => run.status === 'waiting_for_approval'))
+const reworkRuns = computed(() => attentionRuns.value.filter((run) => run.status === 'changes_requested'))
+const stagedRuns = computed(() => attentionRuns.value.filter((run) => run.status === 'pending'))
 
 const activeCount = computed(() => runs.value.filter((run) => run.status === 'running').length)
-const approvalCount = computed(() => runs.value.filter((run) => run.status === 'waiting_for_approval').length)
-const reworkCount = computed(() => runs.value.filter((run) => run.status === 'changes_requested').length)
+const approvalCount = computed(() => approvalBlockedRuns.value.length)
+const reworkCount = computed(() => reworkRuns.value.length)
 const stalledCount = computed(() => runs.value.filter((run) => ['failed', 'cancelled'].includes(run.status)).length)
 const quietCount = computed(() => runs.value.filter((run) => ['completed', 'cancelled'].includes(run.status)).length)
+
+const cockpitHeadline = computed(() => {
+  if (failedRuns.value.length > 0) return 'Failures exist right now. Clear those before pretending the rest of the board is healthy.'
+  if (approvalBlockedRuns.value.length > 0) return 'Human decisions are the main live constraint right now.'
+  if (reworkRuns.value.length > 0) return 'Requested changes are stacking up and deserve explicit follow-through.'
+  if (stagedRuns.value.length > 0) return 'There are staged runs ready for an operator to push forward.'
+  if (activeCount.value > 0) return 'Execution is live. Watch the missions that are already in motion before launching more.'
+  return 'No immediate operator fire is visible. Use the quiet to inspect package readiness and launch deliberately.'
+})
+
+const cockpitFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => [
+  { label: 'Failed', value: String(failedRuns.value.length), tone: failedRuns.value.length ? 'danger' : 'ok' },
+  { label: 'Approval blocked', value: String(approvalBlockedRuns.value.length), tone: approvalBlockedRuns.value.length ? 'warn' : 'ok' },
+  { label: 'Rework', value: String(reworkRuns.value.length), tone: reworkRuns.value.length ? 'warn' : 'default' },
+  { label: 'Staged', value: String(stagedRuns.value.length), tone: stagedRuns.value.length ? 'warn' : 'default' }
+])
+
+const cockpitBullets = computed(() => {
+  if (failedRuns.value.length > 0) {
+    return [
+      'Open the failed runs first and inspect the mission timeline before advancing anything else.',
+      'Treat failure as a truth surface, not just a status badge.',
+      'If a run failed after human review or dispatch, check that handoff path before relaunching.'
+    ]
+  }
+
+  if (approvalBlockedRuns.value.length > 0) {
+    return [
+      'The governance queue is currently the fastest way to change system state.',
+      'Use each run mission view to validate context before making an approval decision.',
+      'Do not approve from memory; inspect the live mission first.'
+    ]
+  }
+
+  if (reworkRuns.value.length > 0) {
+    return [
+      'Changes were explicitly requested, so completion pressure is not the same as readiness.',
+      'Use the mission timeline to confirm the requested rework actually happened.',
+      'Resume only when reopening the same gate is the deliberate next move.'
+    ]
+  }
+
+  if (stagedRuns.value.length > 0) {
+    return [
+      'These runs are ready for operator advancement, not silently self-starting.',
+      'Check package readiness if the run depends on external prompts, files, or documents.',
+      'Advance one with intent rather than treating pending as harmless backlog.'
+    ]
+  }
+
+  return [
+    'No urgent intervention signal is visible right now.',
+    'Use this calm state to validate packages, inspect readiness pressure, and launch deliberately.',
+    'The cockpit remains a triage surface, not a fake control plane.'
+  ]
+})
 
 const cards = computed(() => [
   {
@@ -109,6 +169,17 @@ const cards = computed(() => [
     <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <DashboardStatusCard v-for="card in cards" :key="card.title" v-bind="card" />
     </section>
+
+    <AttentionContextCard
+      title="Immediate command intent"
+      :summary="cockpitHeadline"
+      :facts="cockpitFacts"
+      :bullets="cockpitBullets"
+      :links="[
+        { label: 'Open governance queue', to: '/approvals' },
+        { label: 'Open resource intelligence', to: '/assets' }
+      ]"
+    />
 
     <section v-if="error" class="rf-card border-rose-400/30 bg-rose-500/10 text-rose-100">
       Could not load cockpit data. {{ error.message }}
