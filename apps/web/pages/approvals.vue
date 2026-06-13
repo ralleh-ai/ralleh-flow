@@ -1,21 +1,62 @@
 <script setup lang="ts">
-import type { FlowApprovalRecord } from '~/types/flow'
+import type { FlowApprovalRecord, FlowRun, FlowWorkflow } from '~/types/flow'
 
 const decidedBy = 'operator'
-
 const api = useFlowApi()
 
-const { data: approvals, pending, error, refresh } = await useAsyncData('flow-approvals', async () => {
-  return await api.getApprovals()
+type ApprovalsPagePayload = {
+  approvals: FlowApprovalRecord[]
+  runs: FlowRun[]
+  workflows: FlowWorkflow[]
+}
+
+const { data, pending, error, refresh } = await useAsyncData<ApprovalsPagePayload>('flow-approvals', async () => {
+  const [approvals, runs, workflows] = await Promise.all([
+    api.getApprovals(),
+    api.getRuns(),
+    api.getWorkflows()
+  ])
+
+  return { approvals, runs, workflows }
+}, {
+  default: () => ({ approvals: [], runs: [], workflows: [] })
 })
 
-const items = computed(() => approvals.value ?? [])
+const items = computed(() => data.value?.approvals ?? [])
+const runs = computed(() => data.value?.runs ?? [])
+const workflows = computed(() => data.value?.workflows ?? [])
 const pendingItems = computed(() => items.value.filter((approval) => approval.status === 'pending'))
 const resumableItems = computed(() => items.value.filter((approval) => approval.status === 'changes_requested'))
 const rejectedItems = computed(() => items.value.filter((approval) => approval.status === 'rejected'))
+const approvedItems = computed(() => items.value.filter((approval) => approval.status === 'approved'))
 const busyApprovalId = ref<string | null>(null)
 const actionError = ref<string>('')
 const rationaleDrafts = reactive<Record<string, string>>({})
+
+const statusRank = (status: string) => {
+  if (status === 'pending') return 0
+  if (status === 'changes_requested') return 1
+  if (status === 'rejected') return 2
+  if (status === 'approved') return 3
+  return 4
+}
+
+const orderedItems = computed(() => {
+  return [...items.value].sort((a, b) => {
+    const rankDiff = statusRank(a.status) - statusRank(b.status)
+    if (rankDiff !== 0) return rankDiff
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  })
+})
+
+const runById = computed(() => new Map(runs.value.map((run) => [run.id, run] as const)))
+const workflowById = computed(() => new Map(workflows.value.map((workflow) => [workflow.id, workflow] as const)))
+
+const linkedRun = (approval: FlowApprovalRecord) => runById.value.get(approval.runId) ?? null
+const linkedWorkflow = (approval: FlowApprovalRecord) => {
+  const run = linkedRun(approval)
+  return run ? workflowById.value.get(run.workflowId) ?? null : null
+}
 
 const approvalAttentionSummary = computed(() => {
   if (pendingItems.value.length > 0) {
@@ -30,11 +71,21 @@ const approvalAttentionSummary = computed(() => {
   return 'No urgent governance pressure from current API truth.'
 })
 
-const approvalAttentionFacts = computed(() => [
+const approvalAttentionFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => [
   { label: 'Pending gates', value: String(pendingItems.value.length), tone: pendingItems.value.length ? 'warn' : 'ok' },
   { label: 'Rework waiting', value: String(resumableItems.value.length), tone: resumableItems.value.length ? 'warn' : 'ok' },
-  { label: 'Rejected', value: String(rejectedItems.value.length), tone: rejectedItems.value.length ? 'danger' : 'default' }
-] as const)
+  { label: 'Rejected', value: String(rejectedItems.value.length), tone: rejectedItems.value.length ? 'danger' : 'default' },
+  { label: 'Approved', value: String(approvedItems.value.length), tone: approvedItems.value.length ? 'ok' : 'default' }
+])
+
+const decisionRequiredNow = computed(() => pendingItems.value.length)
+const evidenceGapCount = computed(() => items.value.filter((approval) => !approval.evidenceManifest).length)
+const liveGovernedRuns = computed(() => {
+  return items.value.filter((approval) => {
+    const run = linkedRun(approval)
+    return run && ['running', 'pending', 'waiting_for_approval', 'changes_requested'].includes(run.status)
+  }).length
+})
 
 const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' | 'reject' | 'request-changes' | 'resume') => {
   const rationale = (rationaleDrafts[approval.id] ?? '').trim()
@@ -73,6 +124,8 @@ const badgeTone = (status: string) => {
   return 'rf-badge'
 }
 
+const statusLabel = (status: string) => status.replaceAll('_', ' ')
+
 const manifestName = (approval: FlowApprovalRecord) => {
   if (!approval.evidenceManifest) return 'Not recorded yet'
   const parts = approval.evidenceManifest.split('/')
@@ -87,11 +140,54 @@ const decisionContext = (approval: FlowApprovalRecord) => {
 }
 
 const approvalNextMove = (approval: FlowApprovalRecord) => {
-  if (approval.status === 'pending') return 'Open the linked run mission view, check current step and evidence, then decide deliberately.'
+  if (approval.status === 'pending') return 'Open the linked run mission view, inspect current step, Git branch, and evidence, then decide deliberately.'
   if (approval.status === 'changes_requested') return 'Review the linked run for rework evidence, then resume only when the gate should reopen.'
   if (approval.status === 'rejected') return 'Use the linked run mission view to understand where the mission stopped and whether a new run is safer than resuming.'
   if (approval.status === 'approved') return 'Governance has cleared this gate. The linked run shows what happened next.'
   return 'Use the linked run mission view for operational context.'
+}
+
+const recommendationText = (approval: FlowApprovalRecord) => {
+  const run = linkedRun(approval)
+
+  if (approval.status === 'pending') {
+    if (!approval.evidenceManifest) return 'Recommendation: do not approve from memory. Inspect the mission and confirm why evidence is missing before deciding.'
+    if (run?.status === 'waiting_for_approval') return 'Recommendation: this is a clean trust event. Review the mission context and decide whether the run should cross the gate now.'
+    return 'Recommendation: verify the linked run still matches the requested gate before approving or rejecting.'
+  }
+
+  if (approval.status === 'changes_requested') return 'Recommendation: resume only when the linked run shows real rework evidence, not just elapsed time.'
+  if (approval.status === 'rejected') return 'Recommendation: treat this as a prior trust failure and inspect whether the package or evidence path needs redesign.'
+  if (approval.status === 'approved') return 'Recommendation: use this row as audit context, then inspect downstream mission movement instead of re-deciding the same gate.'
+  return 'Recommendation: inspect the linked run for current truth.'
+}
+
+const consequenceText = (approval: FlowApprovalRecord) => {
+  if (approval.status === 'pending') return 'Consequence: this decision changes live mission state, so speed matters less than correctness.'
+  if (approval.status === 'changes_requested') return 'Consequence: resuming reopens the same gate and puts the mission back into operator trust flow.'
+  if (approval.status === 'rejected') return 'Consequence: this mission path is stopped unless a new run or deliberate recovery path is created.'
+  if (approval.status === 'approved') return 'Consequence: the gate is already cleared and downstream state should be evaluated on the mission view.'
+  return 'Consequence depends on current mission state.'
+}
+
+const trustGapText = (approval: FlowApprovalRecord) => {
+  const run = linkedRun(approval)
+  if (!run) return 'Missing linked run context from current API payload.'
+  if (!linkedWorkflow(approval)) return 'Workflow package metadata is missing for this run from the current page payload.'
+  if (!approval.evidenceManifest) return 'No evidence manifest path is recorded yet, so approval depends more heavily on mission context and operator judgment.'
+  return 'Evidence manifest is recorded, but diff/artifact preview still needs deeper backend exposure.'
+}
+
+const approvalFacts = (approval: FlowApprovalRecord): Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }> => {
+  const run = linkedRun(approval)
+  const workflow = linkedWorkflow(approval)
+
+  return [
+    { label: 'Package', value: workflow?.name || workflow?.id || 'Unknown package' },
+    { label: 'Run state', value: run?.status || 'Run missing', tone: run?.status === 'failed' ? 'danger' : ['waiting_for_approval', 'changes_requested', 'pending'].includes(run?.status || '') ? 'warn' : run?.status === 'running' ? 'ok' : 'default' },
+    { label: 'Current step', value: run?.currentStep || approval.stepId || '—' },
+    { label: 'Evidence', value: approval.evidenceManifest ? 'Manifest recorded' : 'Missing manifest', tone: approval.evidenceManifest ? 'ok' : 'warn' }
+  ]
 }
 </script>
 
@@ -103,25 +199,30 @@ const approvalNextMove = (approval: FlowApprovalRecord) => {
           <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Governance queue</div>
           <h1 class="mt-2 text-3xl font-semibold">Operational approvals and interventions</h1>
           <p class="mt-3 max-w-3xl text-sm text-[color:var(--rf-muted)]">
-            Review live governance gates with enough context to make a deliberate decision. Approvals, rejections, change requests, and resumed gates should all read like operational interventions—not anonymous status flips.
+            Review live governance gates with enough context to make a deliberate decision. Approvals are trust events, not anonymous button rows.
           </p>
         </div>
         <button class="rf-button" :disabled="pending" @click="refresh()">Refresh approvals</button>
       </div>
     </section>
 
-    <section class="grid gap-4 md:grid-cols-3">
+    <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <div class="rf-card">
-        <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Pending</div>
-        <div class="mt-3 text-3xl font-semibold">{{ pendingItems.length }}</div>
-        <p class="mt-2 text-sm text-[color:var(--rf-muted)]">Approvals currently blocking workflow progress.</p>
+        <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Decision required now</div>
+        <div class="mt-3 text-3xl font-semibold">{{ decisionRequiredNow }}</div>
+        <p class="mt-2 text-sm text-[color:var(--rf-muted)]">Pending trust events that can change live mission state.</p>
       </div>
       <div class="rf-card">
-        <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Needs changes</div>
-        <div class="mt-3 text-3xl font-semibold">{{ resumableItems.length }}</div>
-        <p class="mt-2 text-sm text-[color:var(--rf-muted)]">Runs paused for rework that can be reopened to the approval gate.</p>
+        <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Live governed runs</div>
+        <div class="mt-3 text-3xl font-semibold">{{ liveGovernedRuns }}</div>
+        <p class="mt-2 text-sm text-[color:var(--rf-muted)]">Runs currently under or near governance pressure.</p>
       </div>
-      <div class="rf-card md:col-span-2">
+      <div class="rf-card">
+        <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Evidence gaps</div>
+        <div class="mt-3 text-3xl font-semibold">{{ evidenceGapCount }}</div>
+        <p class="mt-2 text-sm text-[color:var(--rf-muted)]">Approvals missing a recorded evidence manifest path.</p>
+      </div>
+      <div class="rf-card">
         <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Current scope</div>
         <p class="mt-3 text-sm text-[color:var(--rf-muted)]">
           Phase 4 truth today: approve / reject / request-changes is live end-to-end, and paused runs can now be resumed back into the approval gate after rework.
@@ -148,19 +249,19 @@ const approvalNextMove = (approval: FlowApprovalRecord) => {
       <div class="flex items-center justify-between gap-4 border-b border-[color:var(--rf-border)] pb-3">
         <div>
           <h2 class="text-lg font-semibold">Approval requests</h2>
-          <p class="text-sm text-[color:var(--rf-muted)]">Operator queue with decision context, evidence manifest references, and deliberate intervention controls.</p>
+          <p class="text-sm text-[color:var(--rf-muted)]">Operator queue with decision context, evidence references, Git trust clues, and deliberate intervention controls.</p>
         </div>
       </div>
 
       <div v-if="pending" class="mt-4 space-y-3">
-        <div v-for="n in 4" :key="n" class="rf-skeleton h-14 rounded-xl" />
+        <div v-for="n in 4" :key="n" class="rf-skeleton h-28 rounded-2xl" />
       </div>
 
       <div v-else-if="error" class="mt-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-100">
         Could not load approvals. {{ error.message }}
       </div>
 
-      <div v-else-if="items.length === 0" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-6 text-sm text-[color:var(--rf-muted)]">
+      <div v-else-if="orderedItems.length === 0" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-6 text-sm text-[color:var(--rf-muted)]">
         No approval requests have been recorded yet.
       </div>
 
@@ -170,26 +271,36 @@ const approvalNextMove = (approval: FlowApprovalRecord) => {
         </div>
 
         <article
-          v-for="approval in items"
+          v-for="approval in orderedItems"
           :key="approval.id"
           class="rounded-[1.6rem] border border-[color:var(--rf-border)] bg-black/10 p-5"
         >
           <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-2">
-                <h3 class="text-lg font-semibold">{{ approval.stepId }}</h3>
-                <span :class="badgeTone(approval.status)">{{ approval.status }}</span>
+                <h3 class="text-lg font-semibold">{{ linkedWorkflow(approval)?.name || approval.stepId }}</h3>
+                <span :class="badgeTone(approval.status)">{{ statusLabel(approval.status) }}</span>
                 <span class="rf-badge">{{ approval.kind }}</span>
                 <span v-if="approval.approverPolicy" class="rf-badge">{{ approval.approverPolicy }}</span>
               </div>
 
               <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[color:var(--rf-muted)]">
                 <span>Run {{ approval.runId }}</span>
+                <span>Step {{ approval.stepId }}</span>
                 <span>Requested by {{ approval.requestedBy || '—' }}</span>
                 <span>{{ new Date(approval.createdAt).toLocaleString() }}</span>
               </div>
 
               <p class="mt-4 text-sm text-white/90">{{ approvalNextMove(approval) }}</p>
+
+              <div class="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div v-for="fact in approvalFacts(approval)" :key="`${approval.id}-${fact.label}`" class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3">
+                  <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">{{ fact.label }}</div>
+                  <div class="mt-2 text-sm font-medium" :class="fact.tone === 'danger' ? 'text-rose-200' : fact.tone === 'warn' ? 'text-amber-200' : fact.tone === 'ok' ? 'text-emerald-200' : 'text-white/90'">
+                    {{ fact.value }}
+                  </div>
+                </div>
+              </div>
 
               <div class="mt-4 grid gap-3 md:grid-cols-2">
                 <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
@@ -200,8 +311,23 @@ const approvalNextMove = (approval: FlowApprovalRecord) => {
                 <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
                   <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Evidence manifest</div>
                   <p class="mt-2 text-sm text-white/90">{{ manifestName(approval) }}</p>
-                  <p v-if="approval.evidenceManifest" class="mt-2 break-all text-xs text-[color:var(--rf-muted)]">{{ approval.evidenceManifest }}</p>
-                  <p v-else class="mt-2 text-xs text-[color:var(--rf-muted)]">No manifest path recorded yet.</p>
+                  <p v-if="approval.evidenceManifest" class="mt-2 break-all font-mono text-xs text-[color:var(--rf-muted)]">{{ approval.evidenceManifest }}</p>
+                  <p v-else class="mt-2 text-xs text-amber-200">No manifest path recorded yet.</p>
+                </div>
+              </div>
+
+              <div class="mt-4 grid gap-3 md:grid-cols-3">
+                <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                  <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Recommendation</div>
+                  <p class="mt-2 text-sm text-white/90">{{ recommendationText(approval) }}</p>
+                </div>
+                <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                  <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Consequence</div>
+                  <p class="mt-2 text-sm text-[color:var(--rf-muted)]">{{ consequenceText(approval) }}</p>
+                </div>
+                <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                  <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Trust gap</div>
+                  <p class="mt-2 text-sm text-[color:var(--rf-muted)]">{{ trustGapText(approval) }}</p>
                 </div>
               </div>
             </div>
@@ -212,6 +338,11 @@ const approvalNextMove = (approval: FlowApprovalRecord) => {
                 <p class="mt-2 text-sm text-[color:var(--rf-muted)]">
                   Open the run mission view to inspect current step, timeline, worker state, and Git isolation before changing governance state.
                 </p>
+                <div class="mt-3 space-y-2 text-xs text-[color:var(--rf-muted)]">
+                  <p>Run state: <span class="text-white/90">{{ linkedRun(approval)?.status || 'unknown' }}</span></p>
+                  <p>Branch: <span class="break-all font-mono text-white/90">{{ linkedRun(approval)?.branch || 'not available' }}</span></p>
+                  <p>Worktree: <span class="break-all font-mono text-white/90">{{ linkedRun(approval)?.worktreePath || 'not available' }}</span></p>
+                </div>
                 <NuxtLink :to="`/runs/${approval.runId}`" class="rf-button mt-4 w-full justify-center">Open run mission</NuxtLink>
               </div>
 
@@ -223,6 +354,7 @@ const approvalNextMove = (approval: FlowApprovalRecord) => {
                   class="w-full rounded-xl border border-[color:var(--rf-border)] bg-black/20 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-400/60"
                   placeholder="Capture why you are approving, rejecting, or requesting changes."
                 />
+                <p class="mt-2 text-xs text-[color:var(--rf-muted)]">Required for reject or request-changes. Strongly recommended for approve.</p>
                 <div class="mt-3 flex flex-wrap justify-end gap-2">
                   <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'reject')">
                     Reject

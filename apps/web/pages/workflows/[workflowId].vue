@@ -6,6 +6,7 @@ const route = useRoute()
 const api = useFlowApi()
 
 const workflowId = computed(() => String(route.params.workflowId || ''))
+const dependencyKeywords = ['asset', 'file', 'path', 'url', 'uri', 'image', 'doc', 'document', 'prompt', 'template', 'input', 'source', 'artifact']
 
 const loadError = ref('')
 const submitPending = ref(false)
@@ -103,8 +104,33 @@ const missingRequiredVariables = computed(() => {
 })
 
 const canCreateRun = computed(() => !!workflow.value && !submitPending.value && missingRequiredVariables.value.length === 0)
-
 const createdRunId = computed(() => createdRun.value?.id || '')
+
+const dependencySignals = computed(() => {
+  return variables.value.flatMap((variable) => {
+    const haystack = [variable.key, variable.type, variable.description]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase()
+
+    const matches = dependencyKeywords.filter((keyword) => haystack.includes(keyword))
+    if (matches.length === 0) return []
+
+    return [{
+      key: variable.key,
+      type: variable.type || 'unknown',
+      required: variable.required,
+      reason: `${matches.slice(0, 2).join(' / ')} signal in contract`
+    }]
+  })
+})
+
+const variableReadinessFacts = computed<Array<{ label: string, value: string, tone?: 'default' | 'ok' | 'warn' | 'danger' }>>(() => [
+  { label: 'Required missing', value: String(missingRequiredVariables.value.length), tone: missingRequiredVariables.value.length ? 'warn' : 'ok' },
+  { label: 'Dependency signals', value: String(dependencySignals.value.length), tone: dependencySignals.value.length ? 'warn' : 'default' },
+  { label: 'Validation', value: validationResult.value ? (validationResult.value.valid ? 'Pass' : 'Issues') : 'Not run', tone: validationResult.value ? (validationResult.value.valid ? 'ok' : 'warn') : 'default' },
+  { label: 'Dry-run', value: dryRunResult.value ? (dryRunResult.value.ready ? 'Ready' : 'Blocked') : 'Not run', tone: dryRunResult.value ? (dryRunResult.value.ready ? 'ok' : 'warn') : 'default' }
+])
 
 const createdRunSummary = computed(() => {
   if (!createdRun.value) return ''
@@ -166,6 +192,16 @@ const readinessSummary = computed(() => {
     return 'Dry-run says this package is currently ready to launch.'
   }
   return 'Run validation and dry-run when you want a current readiness verdict.'
+})
+
+const launchDecisionSummary = computed(() => {
+  if (missingRequiredVariables.value.length > 0) return 'Launch is not ready yet because required inputs are still missing.'
+  if (validationResult.value && !validationResult.value.valid) return 'The package contract is currently failing validation. Fix that before launch.'
+  if (dryRunResult.value && !dryRunResult.value.ready) return 'Dry-run is signaling blockers or pending requirements, so launch should wait.'
+  if (approvalPressureCount.value > 0) return 'This package already has governance pressure in flight. Launching more work may increase operator load.'
+  if (stalledRunCount.value > 0) return 'Past failures exist. Review them before assuming the next run will be clean.'
+  if (dryRunResult.value?.ready) return 'Current signals say this package is ready for a deliberate launch.'
+  return 'Readiness is still partially unknown until validation and dry-run are executed.'
 })
 
 const missionStepSummary = (step: FlowWorkflowStep, index: number) => {
@@ -309,9 +345,9 @@ const createRun = async () => {
               </div>
               <p class="mt-3 text-sm text-[color:var(--rf-muted)]">{{ workflow.description || 'No description provided.' }}</p>
             </div>
-            <div class="lg:max-w-[16rem] lg:text-right">
-              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Readiness stance</div>
-              <p class="mt-2 text-sm text-cyan-200">{{ readinessSummary }}</p>
+            <div class="lg:max-w-[18rem] lg:text-right">
+              <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Launch stance</div>
+              <p class="mt-2 text-sm text-cyan-200">{{ launchDecisionSummary }}</p>
             </div>
           </div>
 
@@ -354,6 +390,21 @@ const createRun = async () => {
           </dl>
         </article>
 
+        <AttentionContextCard
+          title="Launch readiness command"
+          :summary="launchDecisionSummary"
+          :facts="variableReadinessFacts"
+          :bullets="[
+            'Validation answers whether the workflow contract is structurally sound.',
+            'Dry-run answers whether launch looks operationally ready with the current inputs.',
+            'Dependency signals tell you where prompts, files, documents, or URLs may deserve extra trust scrutiny before launch.'
+          ]"
+          :links="[
+            { label: 'Open cockpit', to: '/' },
+            { label: 'Open resource intelligence', to: '/assets' }
+          ]"
+        />
+
         <article class="rf-card">
           <div class="border-b border-[color:var(--rf-border)] pb-3">
             <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Mission design</div>
@@ -381,6 +432,63 @@ const createRun = async () => {
               <p class="mt-2 text-sm text-[color:var(--rf-muted)]">{{ missionStepDetail(step) }}</p>
             </li>
           </ol>
+        </article>
+
+        <article class="rf-card">
+          <div class="border-b border-[color:var(--rf-border)] pb-3">
+            <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Input contract</div>
+            <h2 class="mt-2 text-xl font-semibold">Variables and resource signals</h2>
+            <p class="mt-2 text-sm text-[color:var(--rf-muted)]">This is where launch intent becomes explicit. Required inputs, dependency-sensitive variables, and missing trust context should be visible before a run exists.</p>
+          </div>
+
+          <p v-if="variables.length === 0" class="mt-4 text-sm text-[color:var(--rf-muted)]">
+            This workflow currently defines no variables.
+          </p>
+
+          <div v-else class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.3fr)_minmax(280px,0.9fr)]">
+            <ul class="space-y-3">
+              <li
+                v-for="variable in variables"
+                :key="variable.key"
+                class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4"
+              >
+                <div class="flex items-center justify-between gap-4">
+                  <code class="font-semibold">{{ variable.key }}</code>
+                  <div class="flex flex-wrap gap-2">
+                    <span class="rf-badge">{{ variable.type || 'unknown' }}</span>
+                    <span v-if="variable.required" class="rf-badge rf-badge--warn">required</span>
+                  </div>
+                </div>
+                <p class="mt-2 text-sm text-[color:var(--rf-muted)]">{{ variable.description || 'No description provided.' }}</p>
+              </li>
+            </ul>
+
+            <div class="space-y-4">
+              <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Dependency-sensitive signals</div>
+                <div v-if="dependencySignals.length === 0" class="mt-3 text-sm text-[color:var(--rf-muted)]">
+                  No obvious resource-sensitive variable signatures were detected from current naming and descriptions.
+                </div>
+                <ul v-else class="mt-3 space-y-3 text-sm text-[color:var(--rf-muted)]">
+                  <li v-for="signal in dependencySignals" :key="signal.key" class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-3">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <code class="font-semibold text-white/90">{{ signal.key }}</code>
+                      <span class="rf-badge">{{ signal.type }}</span>
+                      <span v-if="signal.required" class="rf-badge rf-badge--warn">required</span>
+                    </div>
+                    <p class="mt-2 text-xs">{{ signal.reason }}</p>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+                <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Truth boundary</div>
+                <p class="mt-3 text-sm text-[color:var(--rf-muted)]">
+                  This page can detect likely resource-sensitive inputs from workflow contracts, but it still cannot prove asset lineage or version pinning. That remains backend work.
+                </p>
+              </div>
+            </div>
+          </div>
         </article>
 
         <AttentionContextCard
@@ -435,32 +543,6 @@ const createRun = async () => {
               </div>
             </NuxtLink>
           </div>
-        </article>
-
-        <article class="rf-card">
-          <div class="border-b border-[color:var(--rf-border)] pb-3">
-            <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Input contract</div>
-            <h2 class="mt-2 text-xl font-semibold">Variables the operator controls</h2>
-          </div>
-
-          <p v-if="variables.length === 0" class="mt-4 text-sm text-[color:var(--rf-muted)]">
-            This workflow currently defines no variables.
-          </p>
-
-          <ul v-else class="mt-4 space-y-3">
-            <li
-              v-for="variable in variables"
-              :key="variable.key"
-              class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4"
-            >
-              <div class="flex items-center justify-between gap-4">
-                <code class="font-semibold">{{ variable.key }}</code>
-                <span class="rf-badge">{{ variable.type || 'unknown' }}</span>
-              </div>
-              <p class="mt-2 text-sm text-[color:var(--rf-muted)]">{{ variable.description || 'No description provided.' }}</p>
-              <div class="mt-2 text-xs text-[color:var(--rf-muted)]">{{ variable.required ? 'Required' : 'Optional' }}</div>
-            </li>
-          </ul>
         </article>
       </section>
 
