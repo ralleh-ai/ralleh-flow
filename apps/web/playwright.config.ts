@@ -1,18 +1,20 @@
 import { defineConfig, devices } from '@playwright/test'
 
+const baseURL = 'http://127.0.0.1:4317'
+
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
   retries: 0,
   reporter: 'list',
   use: {
-    baseURL: 'http://localhost:4300',
+    baseURL,
     trace: 'on-first-retry',
     headless: true
   },
   webServer: {
-    command: 'NUXT_UI_TEST_MODE=1 NUXT_APP_BASE_URL=/ NUXT_PUBLIC_API_BASE=/api/flow/v1 pnpm dev',
-    port: 4300,
+    command: 'pnpm test:ui:server',
+    url: baseURL,
     reuseExistingServer: false,
     timeout: 120000
   },

@@ -9,7 +9,8 @@
     "postinstall": "nuxt prepare",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
-    "test:ui:install": "playwright install chromium"
+    "test:ui:install": "playwright install chromium",
+    "test:ui:server": "node scripts/playwright-webserver.mjs"
   },
   "dependencies": {
     "@vueuse/core": "^14.2.1",
