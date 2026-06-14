@@ -275,13 +275,15 @@ const approvalFacts = (approval: FlowApprovalRecord): OperationalFact[] => {
         <article
           v-for="approval in orderedItems"
           :key="approval.id"
+          :data-testid="`approval-card-${approval.id}`"
+          :data-approval-id="approval.id"
           class="rounded-[1.6rem] border border-[color:var(--rf-border)] bg-black/10 p-5"
         >
           <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-2">
                 <h3 class="text-lg font-semibold">{{ linkedWorkflow(approval)?.name || approval.stepId }}</h3>
-                <span :class="badgeTone(approval.status)">{{ statusLabel(approval.status) }}</span>
+                <span :class="badgeTone(approval.status)" :data-testid="`approval-status-${approval.id}`">{{ statusLabel(approval.status) }}</span>
                 <span class="rf-badge">{{ approval.kind }}</span>
                 <span v-if="approval.approverPolicy" class="rf-badge">{{ approval.approverPolicy }}</span>
               </div>
@@ -347,19 +349,20 @@ const approvalFacts = (approval: FlowApprovalRecord): OperationalFact[] => {
                 <label class="mb-2 block text-left text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Operator note</label>
                 <textarea
                   v-model="rationaleDrafts[approval.id]"
+                  :data-testid="`approval-note-${approval.id}`"
                   rows="4"
                   class="w-full rounded-xl border border-[color:var(--rf-border)] bg-black/20 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-400/60"
                   placeholder="Capture why you are approving, rejecting, or requesting changes."
                 />
                 <p class="mt-2 text-xs text-[color:var(--rf-muted)]">Required for reject or request-changes. Strongly recommended for approve.</p>
                 <div class="mt-3 flex flex-wrap justify-end gap-2">
-                  <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'reject')">
+                  <button class="rf-button rf-button--ghost" :data-testid="`approval-reject-${approval.id}`" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'reject')">
                     Reject
                   </button>
-                  <button class="rf-button rf-button--ghost" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'request-changes')">
+                  <button class="rf-button rf-button--ghost" :data-testid="`approval-request-changes-${approval.id}`" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'request-changes')">
                     Request changes
                   </button>
-                  <button class="rf-button" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'approve')">
+                  <button class="rf-button" :data-testid="`approval-approve-${approval.id}`" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'approve')">
                     <span v-if="busyApprovalId === approval.id">Working…</span>
                     <span v-else>Approve</span>
                   </button>
@@ -371,7 +374,7 @@ const approvalFacts = (approval: FlowApprovalRecord): OperationalFact[] => {
                 <p class="mt-2 text-sm text-[color:var(--rf-muted)]">
                   Reopen this approval only after reviewing the linked mission and confirming the requested rework actually happened.
                 </p>
-                <button class="rf-button mt-4 w-full justify-center" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'resume')">
+                <button class="rf-button mt-4 w-full justify-center" :data-testid="`approval-resume-${approval.id}`" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'resume')">
                   <span v-if="busyApprovalId === approval.id">Working…</span>
                   <span v-else>Resume approval</span>
                 </button>

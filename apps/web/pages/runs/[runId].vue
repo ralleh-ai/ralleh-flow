@@ -602,7 +602,7 @@ const failStep = async () => {
 
 <template>
   <div class="space-y-6">
-    <section class="rf-card">
+    <section class="rf-card" data-testid="run-mission-header">
       <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <NuxtLink to="/" class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)] hover:text-cyan-200">Operations cockpit</NuxtLink>
@@ -810,7 +810,7 @@ const failStep = async () => {
           </div>
 
           <div v-else class="mt-5 grid gap-3">
-            <div v-for="(step, index) in workflowSteps" :key="step.id" class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
+            <div v-for="(step, index) in workflowSteps" :key="step.id" data-testid="run-step-card" :data-step-id="step.id" class="rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4">
               <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
                   <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Step {{ index + 1 }}</div>
@@ -870,7 +870,7 @@ const failStep = async () => {
       </div>
 
       <aside class="space-y-6">
-        <section v-if="linkedApproval" class="rf-card">
+        <section v-if="linkedApproval" class="rf-card" data-testid="linked-approval-record">
           <div class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Linked approval record</div>
           <h2 class="mt-2 text-lg font-semibold">Governance object in context</h2>
           <div class="mt-4 space-y-3 text-sm text-[color:var(--rf-muted)]">

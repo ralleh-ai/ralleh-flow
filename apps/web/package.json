@@ -6,7 +6,10 @@
     "dev": "nuxt dev --port 4300",
     "build": "nuxt build",
     "preview": "nuxt preview --port 4300",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "test:ui": "playwright test",
+    "test:ui:headed": "playwright test --headed",
+    "test:ui:install": "playwright install chromium"
   },
   "dependencies": {
     "@vueuse/core": "^14.2.1",
@@ -17,6 +20,7 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@tailwindcss/postcss": "^4.2.1",
     "@types/node": "^24.3.0",
     "autoprefixer": "^10.4.27",

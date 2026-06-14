@@ -146,7 +146,7 @@ const cards = computed(() => [
 
 <template>
   <div class="space-y-6">
-    <section class="rf-card">
+    <section class="rf-card" data-testid="dashboard-command-view">
       <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
           <p class="text-xs uppercase tracking-[0.3em] text-[color:var(--rf-muted)]">Operations cockpit</p>
@@ -161,7 +161,7 @@ const cards = computed(() => [
           </div>
         </div>
         <div class="flex flex-wrap gap-3">
-          <NuxtLink to="/approvals" class="rf-button">Open governance queue</NuxtLink>
+          <NuxtLink to="/approvals" class="rf-button" data-testid="dashboard-open-governance">Open governance queue</NuxtLink>
           <button class="rf-button" :disabled="pending" @click="refresh()">Refresh cockpit</button>
         </div>
       </div>
@@ -207,6 +207,8 @@ const cards = computed(() => [
             v-for="run in attentionRuns"
             :key="run.id"
             :to="`/runs/${run.id}`"
+            data-testid="dashboard-triage-run"
+            :data-run-id="run.id"
             class="block rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4 transition hover:border-cyan-400/40 hover:bg-black/20"
           >
             <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -250,6 +252,8 @@ const cards = computed(() => [
             v-for="run in liveRuns"
             :key="run.id"
             :to="`/runs/${run.id}`"
+            data-testid="dashboard-live-run"
+            :data-run-id="run.id"
             class="block rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-4 transition hover:border-cyan-400/40 hover:bg-black/20"
           >
             <div class="flex items-start justify-between gap-3">

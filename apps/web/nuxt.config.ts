@@ -1,6 +1,9 @@
+const uiTestMode = process.env.NUXT_UI_TEST_MODE === '1'
+
 export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
+  ssr: uiTestMode ? false : true,
   modules: ['@vueuse/nuxt'],
   css: ['~/assets/css/main.css'],
   devServer: {
