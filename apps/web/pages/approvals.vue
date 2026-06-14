@@ -259,11 +259,11 @@ const approvalFacts = (approval: FlowApprovalRecord): OperationalFact[] => {
         <div v-for="n in 4" :key="n" class="rf-skeleton h-28 rounded-2xl" />
       </div>
 
-      <div v-else-if="error" class="mt-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+      <div v-else-if="error" data-testid="approval-error-banner" class="mt-4 rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-100">
         Could not load approvals. {{ error.message }}
       </div>
 
-      <div v-else-if="orderedItems.length === 0" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-6 text-sm text-[color:var(--rf-muted)]">
+      <div v-else-if="orderedItems.length === 0" data-testid="approval-empty-state" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-6 text-sm text-[color:var(--rf-muted)]">
         No approval requests have been recorded yet.
       </div>
 

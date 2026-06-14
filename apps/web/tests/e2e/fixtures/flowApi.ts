@@ -8,6 +8,17 @@ type FlowFixtures = {
   approvals: FlowApprovalRecord[]
 }
 
+type FlowApiMockOptions = {
+  runs?: FlowRun[]
+  approvals?: FlowApprovalRecord[]
+  fail?: {
+    workflows?: boolean
+    runs?: boolean
+    approvals?: boolean
+    runDetail?: boolean
+  }
+}
+
 const fixtures: FlowFixtures = {
   workflows: [
     {
@@ -130,10 +141,18 @@ const fixtures: FlowFixtures = {
 
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 
-export const installFlowApiMocks = async (page: Page) => {
+export const installFlowApiMocks = async (page: Page, options: FlowApiMockOptions = {}) => {
   const state = {
-    runs: clone(fixtures.runs),
-    approvals: clone(fixtures.approvals)
+    runs: clone(options.runs ?? fixtures.runs),
+    approvals: clone(options.approvals ?? fixtures.approvals)
+  }
+
+  const fail = {
+    workflows: false,
+    runs: false,
+    approvals: false,
+    runDetail: false,
+    ...options.fail
   }
 
   await page.route('**/api/flow/v1/**', async (route) => {
@@ -149,14 +168,17 @@ export const installFlowApiMocks = async (page: Page) => {
     })
 
     if (method === 'GET' && path.endsWith('/workflows')) {
+      if (fail.workflows) return json({ error: 'workflow service unavailable' }, 503)
       return json({ items: fixtures.workflows })
     }
 
     if (method === 'GET' && path.endsWith('/runs')) {
+      if (fail.runs) return json({ error: 'run service unavailable' }, 500)
       return json({ items: state.runs })
     }
 
     if (method === 'GET' && path.endsWith('/approvals')) {
+      if (fail.approvals) return json({ error: 'approval service unavailable' }, 500)
       return json({ items: state.approvals })
     }
 
@@ -170,6 +192,7 @@ export const installFlowApiMocks = async (page: Page) => {
 
     const runMatch = path.match(/\/api\/flow\/v1\/runs\/([^/]+)$/)
     if (method === 'GET' && runMatch?.[1]) {
+      if (fail.runDetail) return json({ error: 'run detail unavailable' }, 500)
       const runId = runMatch[1]
       const run = state.runs.find((item) => item.id === runId)
       if (!run) return json({ error: 'run not found' }, 404)
@@ -216,4 +239,3 @@ export const installFlowApiMocks = async (page: Page) => {
     return json({ error: `Unhandled mocked endpoint: ${method} ${path}` }, 404)
   })
 }
-

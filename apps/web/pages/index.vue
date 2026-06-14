@@ -182,7 +182,7 @@ const cards = computed(() => [
       ]"
     />
 
-    <section v-if="error" class="rf-card border-rose-400/30 bg-rose-500/10 text-rose-100">
+    <section v-if="error" data-testid="dashboard-error-banner" class="rf-card border-rose-400/30 bg-rose-500/10 text-rose-100">
       Could not load cockpit data. {{ error.message }}
     </section>
 
@@ -243,7 +243,7 @@ const cards = computed(() => [
           <div v-for="n in 4" :key="n" class="rf-skeleton h-20 rounded-2xl" />
         </div>
 
-        <div v-else-if="liveRuns.length === 0" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-6 text-sm text-[color:var(--rf-muted)]">
+        <div v-else-if="liveRuns.length === 0" data-testid="dashboard-live-empty" class="mt-4 rounded-2xl border border-[color:var(--rf-border)] bg-black/10 p-6 text-sm text-[color:var(--rf-muted)]">
           No live or staged runs right now.
         </div>
 

@@ -61,6 +61,10 @@ const { data, pending, refresh } = await useAsyncData<RunPagePayload>(
 
       return { run, workflow, approvals }
     } catch (err: any) {
+      if (err?.statusCode === 404 || err?.response?.status === 404) {
+        loadError.value = ''
+        return emptyRunPayload()
+      }
       loadError.value = err?.data?.error || err?.message || 'Could not load run'
       return emptyRunPayload()
     }
@@ -687,11 +691,11 @@ const failStep = async () => {
       </div>
     </section>
 
-    <section v-else-if="loadError" class="rf-card border-rose-400/30 bg-rose-500/10 text-rose-100">
+    <section v-else-if="loadError" data-testid="run-load-error" class="rf-card border-rose-400/30 bg-rose-500/10 text-rose-100">
       Could not load run {{ runId }}. {{ loadError }}
     </section>
 
-    <section v-else-if="!run" class="rf-card text-sm text-[color:var(--rf-muted)]">
+    <section v-else-if="!run" data-testid="run-not-found" class="rf-card text-sm text-[color:var(--rf-muted)]">
       Run {{ runId }} was not found.
     </section>
 
