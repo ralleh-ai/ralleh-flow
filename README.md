@@ -28,6 +28,38 @@ Ralleh Flow combines:
 
 Core product stance: **Git is the trust layer, Redis is runtime coordination, SQLite is operational metadata.**
 
+## Workflow patterns supported today
+
+Ralleh Flow already supports multiple execution patterns that teams can mix depending on risk, speed, and governance needs:
+
+- **Human-gated approval workflow**
+  - Create a run from a Git-tracked workflow
+  - Progress steps until an approval gate is reached
+  - Approve, reject, or request changes with rationale
+  - Resume safely with full timeline traceability
+
+- **Agent handoff workflow (OpenClaw dispatch)**
+  - Dispatch active steps to specialized agents
+  - Track dispatch metadata and session linkage in run history
+  - Complete or fail the step with explicit outcomes
+
+- **Operator-driven mission control workflow**
+  - Advance pending runs intentionally from the UI/API
+  - Intervene during failures and recover from known error states
+  - Execute run mutations through explicit controls rather than hidden automation
+
+- **Git-isolated execution workflow**
+  - Run-scoped branch/worktree isolation to avoid cross-run contamination
+  - Runtime directories and checkpoints tied to run identity
+  - Repeatable execution context for debugging and audit
+
+- **Resilient callback/recovery workflow**
+  - Recover from approval transitions and step-level failures
+  - Maintain deterministic run state transitions (`pending -> running -> awaiting_approval -> resumed/completed/failed`)
+  - Preserve operator trust with visible timeline evidence
+
+These patterns let Ralleh Flow function as a true **AI operations control room**: fast enough for day-to-day execution, but governed enough for high-stakes production work.
+
 ## Why it matters (the potential)
 
 Ralleh Flow is designed to evolve from a workflow runner into a durable operations platform for AI-native teams:
