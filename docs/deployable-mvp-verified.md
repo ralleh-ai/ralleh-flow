@@ -19,3 +19,4 @@ Implementation detail:
 - Root command: `pnpm verify:mvp`
 - Script entrypoint: `./scripts/verify-mvp.sh`
 - CI workflow includes backend verification + web build before e2e lanes: `.github/workflows/web-e2e-reliability.yml`
+- Deployment preflight wrapper: `./deploy/scripts/preflight.sh` (runs MVP gate + deployment config syntax checks)

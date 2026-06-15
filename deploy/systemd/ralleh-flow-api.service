@@ -1,14 +1,32 @@
 [Unit]
 Description=Ralleh Flow API
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/ralleh/ralleh-flow/apps/api
+EnvironmentFile=-/etc/ralleh-flow/ralleh-flow-api.env
 Environment=RALLEH_FLOW_API_ADDR=:4310
 ExecStart=/usr/bin/env go run ./cmd/ralleh-flow-api
 Restart=always
 RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0027
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
