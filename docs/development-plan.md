@@ -823,19 +823,21 @@ Current scaffold originally used mock data, but this is now partially superseded
 
 Implemented since the original draft:
 - real workflow loading from YAML for catalog/detail
-- SQLite-backed run creation/list/detail
+- workflow validation plus dry-run contract endpoint
+- SQLite-backed run + step + approval persistence with timeline events
 - required workflow variable enforcement on create-run
-- unique run-id namespacing for runtime directories and branch naming strings
-- basic workflow validation endpoint
-- live workflow detail/create-run UI and run explorer UI
+- unique run-id namespacing with git branch + worktree preparation
+- guarded run transitions for pending/advance/dispatch/complete/fail/resume paths
+- approval decision endpoints (approve/reject/request-changes)
+- optional OpenClaw hook dispatcher integration and Redis-backed coordinator/event bus modes
+- Playwright UI coverage for operator happy-path, empty-state, and API-failure surfaces
 
 Still not implemented and should be treated as active gaps:
-- actual git worktree creation and repository isolation enforcement beyond naming/runtime-dir prep
-- Redis Streams, distributed locks, and single-worker lease enforcement
-- dry-run endpoint and execution graph planning
-- real step execution/checkpoint/resume lifecycle
-- approval persistence/actions and asset/artifact APIs
-- automated UI tests beyond build verification
+- autonomous worker execution for step kinds beyond orchestration state transitions (callbacks are still operator/agent driven)
+- asset upload/artifact registry APIs with provenance manifests
+- production authn/authz for operator and approval actions
+- richer live event streaming in the UI (current UI uses API polling)
+- run cleanup/archive retention policy and snapshot lifecycle automation
 
 ---
 

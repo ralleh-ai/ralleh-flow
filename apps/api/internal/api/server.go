@@ -13,6 +13,10 @@ import (
 	"github.com/ralleh-ai/ralleh-flow/apps/api/internal/service"
 )
 
+const maxJSONBodyBytes int64 = 1 << 20 // 1 MiB
+
+var errJSONBodyTooLarge = errors.New("request body too large")
+
 func NewServer(cfg config.Config) *http.Server {
 	return NewApp(cfg).Server
 }
@@ -112,11 +116,9 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 		var input struct {
 			Variables map[string]string `json:"variables"`
 		}
-		if r.Body != nil {
-			if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
-				return
-			}
+		if err := decodeJSONBody(w, r, &input, true); err != nil {
+			writeJSONDecodeError(w, err)
+			return
 		}
 
 		result, found, err := workflowService.DryRun(workflowID, input.Variables)
@@ -158,8 +160,8 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 			DecidedBy string `json:"decidedBy"`
 			Rationale string `json:"rationale"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		if err := decodeJSONBody(w, r, &input, true); err != nil {
+			writeJSONDecodeError(w, err)
 			return
 		}
 		run, err := runService.ApproveApproval(r.Context(), approvalID, service.ApprovalDecisionInput{DecidedBy: input.DecidedBy, Rationale: input.Rationale})
@@ -185,8 +187,8 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 			DecidedBy string `json:"decidedBy"`
 			Rationale string `json:"rationale"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		if err := decodeJSONBody(w, r, &input, true); err != nil {
+			writeJSONDecodeError(w, err)
 			return
 		}
 		run, err := runService.RejectApproval(r.Context(), approvalID, service.ApprovalDecisionInput{DecidedBy: input.DecidedBy, Rationale: input.Rationale})
@@ -212,8 +214,8 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 			DecidedBy string `json:"decidedBy"`
 			Rationale string `json:"rationale"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		if err := decodeJSONBody(w, r, &input, true); err != nil {
+			writeJSONDecodeError(w, err)
 			return
 		}
 		run, err := runService.RequestApprovalChanges(r.Context(), approvalID, service.ApprovalDecisionInput{DecidedBy: input.DecidedBy, Rationale: input.Rationale})
@@ -235,8 +237,8 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 
 	r.Post("/v1/runs", func(w http.ResponseWriter, r *http.Request) {
 		var input service.CreateRunInput
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		if err := decodeJSONBody(w, r, &input, false); err != nil {
+			writeJSONDecodeError(w, err)
 			return
 		}
 
@@ -322,8 +324,8 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 			SessionID string `json:"sessionId"`
 			Note      string `json:"note"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		if err := decodeJSONBody(w, r, &input, true); err != nil {
+			writeJSONDecodeError(w, err)
 			return
 		}
 		run, err := runService.DispatchActiveStep(r.Context(), runID, service.HandoffDispatchInput{SessionID: input.SessionID, Note: input.Note})
@@ -354,8 +356,8 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 			SessionID       string `json:"sessionId"`
 			UpstreamRunID   string `json:"upstreamRunId"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		if err := decodeJSONBody(w, r, &input, true); err != nil {
+			writeJSONDecodeError(w, err)
 			return
 		}
 		run, err := runService.CompleteActiveStep(r.Context(), runID, service.StepCompletionInput{Summary: input.Summary, CheckpointLabel: input.CheckpointLabel, SessionID: input.SessionID, UpstreamRunID: input.UpstreamRunID})
@@ -382,8 +384,8 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 			SessionID     string `json:"sessionId"`
 			UpstreamRunID string `json:"upstreamRunId"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+		if err := decodeJSONBody(w, r, &input, true); err != nil {
+			writeJSONDecodeError(w, err)
 			return
 		}
 		run, err := runService.FailActiveStep(r.Context(), runID, service.StepFailureInput{Reason: input.Reason, SessionID: input.SessionID, UpstreamRunID: input.UpstreamRunID})
@@ -410,6 +412,44 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, target any, allowEmpty bool) error {
+	if r.Body == nil {
+		if allowEmpty {
+			return nil
+		}
+		return io.EOF
+	}
+
+	reader := http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	defer reader.Close()
+
+	decoder := json.NewDecoder(reader)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		if errors.Is(err, io.EOF) && allowEmpty {
+			return nil
+		}
+		if strings.Contains(err.Error(), "http: request body too large") {
+			return errJSONBodyTooLarge
+		}
+		return err
+	}
+
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("json body must contain a single object")
+	}
+
+	return nil
+}
+
+func writeJSONDecodeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errJSONBodyTooLarge) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "request body exceeds 1 MiB limit"})
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
 }
 
 func cors(allowedOrigins string) func(http.Handler) http.Handler {

@@ -69,6 +69,86 @@ func TestReadyzFailsWhenRedisConfiguredButUnavailable(t *testing.T) {
 	}
 }
 
+func TestCreateRunRejectsUnknownJSONFields(t *testing.T) {
+	repoRoot := t.TempDir()
+	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatalf("mkdir workflow dir: %v", err)
+	}
+	workflowYAML := `metadata:
+  id: feature-development
+  name: Feature Development
+  version: 0.1.0
+steps:
+  - id: research
+    kind: agent_task
+`
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	initGitRepoWithCommit(t, repoRoot)
+
+	app := NewApp(config.Config{
+		APIAddr:        ":0",
+		AllowedOrigins: "http://localhost:4300",
+		RepoRoot:       repoRoot,
+		DBPath:         filepath.Join(repoRoot, "data", "ralleh-flow.db"),
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader([]byte(`{"workflowId":"feature-development","unexpected":"field"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	app.Server.Handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (%s)", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "invalid JSON body") {
+		t.Fatalf("expected invalid JSON body error, got %s", res.Body.String())
+	}
+}
+
+func TestCreateRunRejectsOversizedJSONBody(t *testing.T) {
+	repoRoot := t.TempDir()
+	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")
+	if err := os.MkdirAll(filepath.Dir(workflowPath), 0o755); err != nil {
+		t.Fatalf("mkdir workflow dir: %v", err)
+	}
+	workflowYAML := `metadata:
+  id: feature-development
+  name: Feature Development
+  version: 0.1.0
+steps:
+  - id: research
+    kind: agent_task
+`
+	if err := os.WriteFile(workflowPath, []byte(workflowYAML), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	initGitRepoWithCommit(t, repoRoot)
+
+	app := NewApp(config.Config{
+		APIAddr:        ":0",
+		AllowedOrigins: "http://localhost:4300",
+		RepoRoot:       repoRoot,
+		DBPath:         filepath.Join(repoRoot, "data", "ralleh-flow.db"),
+	})
+
+	big := strings.Repeat("a", (1<<20)+256)
+	body := []byte(`{"workflowId":"feature-development","variables":{"payload":"` + big + `"}}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	app.Server.Handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d (%s)", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "1 MiB") {
+		t.Fatalf("expected 1 MiB limit error, got %s", res.Body.String())
+	}
+}
+
 func TestApproveApprovalEndpointAdvancesRun(t *testing.T) {
 	repoRoot := t.TempDir()
 	workflowPath := filepath.Join(repoRoot, "workflows", "examples", "feature-development", "workflow.yaml")

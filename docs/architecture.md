@@ -23,9 +23,11 @@ The architecture prioritizes reproducibility, isolation, and operational visibil
 ## 2) API + Runtime (`apps/api`)
 
 - Go service exposing orchestration and run APIs
-- workflow execution engine with checkpoint persistence
+- workflow state-transition engine with checkpoint persistence
 - approval pause/resume lifecycle handling
-- dispatch integration with OpenClaw agent workflows
+- dispatch integration with OpenClaw agent workflows (noop fallback available)
+
+Current MVP note: run progression and callbacks are implemented, but fully autonomous execution workers for step kinds are still a near-term hardening target.
 
 ## 3) Persistence and coordination
 
