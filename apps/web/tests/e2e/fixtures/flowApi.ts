@@ -21,6 +21,8 @@ type FlowApiMockOptions = {
   }
 }
 
+const workflowByID = (workflowId: string) => fixtures.workflowDetails[workflowId]
+
 const fixtures: FlowFixtures = {
   workflows: [
     {
@@ -189,9 +191,85 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
     const workflowMatch = path.match(/\/api\/flow\/v1\/workflows\/([^/]+)$/)
     if (method === 'GET' && workflowMatch?.[1]) {
       const workflowId = workflowMatch[1]
-      const workflow = fixtures.workflowDetails[workflowId]
+      const workflow = workflowByID(workflowId)
       if (!workflow) return json({ error: 'workflow not found' }, 404)
       return json(workflow)
+    }
+
+    const validateMatch = path.match(/\/api\/flow\/v1\/workflows\/([^/]+)\/validate$/)
+    if (method === 'POST' && validateMatch?.[1]) {
+      const workflowId = validateMatch[1]
+      const workflow = workflowByID(workflowId)
+      if (!workflow) return json({ error: 'workflow not found' }, 404)
+      return json({
+        workflowId,
+        valid: true,
+        errors: [],
+        warnings: []
+      })
+    }
+
+    const dryRunMatch = path.match(/\/api\/flow\/v1\/workflows\/([^/]+)\/dry-run$/)
+    if (method === 'POST' && dryRunMatch?.[1]) {
+      const workflowId = dryRunMatch[1]
+      const workflow = workflowByID(workflowId)
+      if (!workflow) return json({ error: 'workflow not found' }, 404)
+
+      const payloadText = req.postData() || '{}'
+      const payload = JSON.parse(payloadText)
+      const provided = payload?.variables ?? {}
+
+      const missingVariables = workflow.variables
+        .filter((variable) => variable.required && !String(provided[variable.key] || '').trim())
+        .map((variable) => variable.key)
+
+      return json({
+        workflowId,
+        ready: missingVariables.length === 0,
+        missingVariables,
+        warnings: [],
+        steps: workflow.steps.map((step) => ({
+          id: step.id,
+          kind: step.kind,
+          agent: step.agent,
+          blocking: step.kind === 'human_approval' || !!step.approverPolicy
+        }))
+      })
+    }
+
+    if (method === 'POST' && path.endsWith('/api/flow/v1/runs')) {
+      const payloadText = req.postData() || '{}'
+      const payload = JSON.parse(payloadText)
+      const workflowId = String(payload.workflowId || '')
+      const workflow = workflowByID(workflowId)
+      if (!workflowId) return json({ error: 'workflowId is required' }, 400)
+      if (!workflow) return json({ error: 'workflow not found' }, 404)
+
+      const provided = payload?.variables ?? {}
+      const missingVariables = workflow.variables
+        .filter((variable) => variable.required && !String(provided[variable.key] || '').trim())
+        .map((variable) => variable.key)
+
+      if (missingVariables.length > 0) {
+        return json({ error: `missing required variables: ${missingVariables.join(', ')}` }, 400)
+      }
+
+      const runId = `run-created-${state.runs.length + 1}`
+      const run: FlowRun = {
+        id: runId,
+        workflowId,
+        status: 'pending',
+        currentStep: workflow.steps[0]?.id || '',
+        branch: `flow/${runId}`,
+        worktreePath: `/tmp/ralleh-flow/${runId}`,
+        createdAt: '2026-06-14T06:00:00.000Z',
+        timeline: [{ at: '2026-06-14T06:00:00.000Z', type: 'run_created', detail: 'Run created from package detail page.' }],
+        steps: [],
+        handoffs: []
+      }
+
+      state.runs.unshift(run)
+      return json(run, 201)
     }
 
     const runMatch = path.match(/\/api\/flow\/v1\/runs\/([^/]+)$/)
