@@ -16,8 +16,21 @@ type FlowApiMockOptions = {
     runs?: boolean
     approvals?: boolean
     runDetail?: boolean
+    createRun?: boolean
+    validateWorkflow?: boolean
+    dryRunWorkflow?: boolean
+    advance?: boolean
+    dispatchStep?: boolean
+    completeStep?: boolean
+    failStep?: boolean
     resume?: boolean
     approvalDecision?: 'approve' | 'reject' | 'request-changes' | 'any'
+  }
+  failOnce?: {
+    advance?: boolean
+    dispatchStep?: boolean
+    completeStep?: boolean
+    failStep?: boolean
   }
 }
 
@@ -156,9 +169,56 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
     runs: false,
     approvals: false,
     runDetail: false,
+    createRun: false,
+    validateWorkflow: false,
+    dryRunWorkflow: false,
+    advance: false,
+    dispatchStep: false,
+    completeStep: false,
+    failStep: false,
     resume: false,
     approvalDecision: undefined,
     ...options.fail
+  }
+
+  const failOnceRemaining = {
+    advance: options.failOnce?.advance ? 1 : 0,
+    dispatchStep: options.failOnce?.dispatchStep ? 1 : 0,
+    completeStep: options.failOnce?.completeStep ? 1 : 0,
+    failStep: options.failOnce?.failStep ? 1 : 0
+  }
+
+  const shouldFailOnce = (key: keyof typeof failOnceRemaining) => {
+    if (failOnceRemaining[key] <= 0) return false
+    failOnceRemaining[key] -= 1
+    return true
+  }
+
+  const fixedAt = '2026-06-14T06:10:00.000Z'
+
+  const findRun = (runId: string) => state.runs.find((item) => item.id === runId)
+
+  const latestRunningStep = (run: FlowRun) => {
+    const runningSteps = run.steps.filter((step) => step.status === 'running')
+    return runningSteps[runningSteps.length - 1]
+  }
+
+  const ensureHandoff = (run: FlowRun, stepId: string) => {
+    let handoff = run.handoffs.find((item) => item.stepId === stepId)
+    if (!handoff) {
+      handoff = {
+        runId: run.id,
+        stepId,
+        status: 'claimed',
+        kind: 'agent_task',
+        workerId: `worker-${stepId}`,
+        sessionId: `session:${run.id}:${stepId}`,
+        createdAt: fixedAt,
+        updatedAt: fixedAt
+      }
+      run.handoffs.push(handoff)
+    }
+    return handoff
   }
 
   await page.route('**/api/flow/v1/**', async (route) => {
@@ -198,6 +258,7 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
 
     const validateMatch = path.match(/\/api\/flow\/v1\/workflows\/([^/]+)\/validate$/)
     if (method === 'POST' && validateMatch?.[1]) {
+      if (fail.validateWorkflow) return json({ error: 'validation service unavailable' }, 503)
       const workflowId = validateMatch[1]
       const workflow = workflowByID(workflowId)
       if (!workflow) return json({ error: 'workflow not found' }, 404)
@@ -211,6 +272,7 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
 
     const dryRunMatch = path.match(/\/api\/flow\/v1\/workflows\/([^/]+)\/dry-run$/)
     if (method === 'POST' && dryRunMatch?.[1]) {
+      if (fail.dryRunWorkflow) return json({ error: 'dry-run service unavailable' }, 503)
       const workflowId = dryRunMatch[1]
       const workflow = workflowByID(workflowId)
       if (!workflow) return json({ error: 'workflow not found' }, 404)
@@ -238,6 +300,7 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
     }
 
     if (method === 'POST' && path.endsWith('/api/flow/v1/runs')) {
+      if (fail.createRun) return json({ error: 'create run unavailable right now' }, 503)
       const payloadText = req.postData() || '{}'
       const payload = JSON.parse(payloadText)
       const workflowId = String(payload.workflowId || '')
@@ -334,6 +397,151 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
         latestApproval.decidedAt = undefined
       }
 
+      return json(run)
+    }
+
+    const advanceMatch = path.match(/\/api\/flow\/v1\/runs\/([^/]+)\/advance$/)
+    if (method === 'POST' && advanceMatch?.[1]) {
+      if (fail.advance || shouldFailOnce('advance')) return json({ error: 'run advance unavailable right now' }, 503)
+
+      const run = findRun(advanceMatch[1])
+      if (!run) return json({ error: 'run not found' }, 404)
+      if (run.status !== 'pending') return json({ error: `run is ${run.status}; only pending runs can be advanced` }, 409)
+
+      const workflow = workflowByID(run.workflowId)
+      if (!workflow) return json({ error: 'workflow not found' }, 404)
+
+      const stepId = run.currentStep || workflow.steps[0]?.id
+      if (!stepId) return json({ error: 'workflow has no steps to advance' }, 422)
+
+      run.status = 'running'
+      run.currentStep = stepId
+
+      if (!run.steps.find((step) => step.stepId === stepId && step.status === 'running')) {
+        run.steps.push({
+          runId: run.id,
+          stepId,
+          status: 'running',
+          workerId: `worker-${stepId}`,
+          startedAt: fixedAt,
+          kind: workflow.steps.find((step) => step.id === stepId)?.kind,
+          agent: workflow.steps.find((step) => step.id === stepId)?.agent
+        })
+      }
+
+      const handoff = ensureHandoff(run, stepId)
+      handoff.status = 'claimed'
+      handoff.updatedAt = fixedAt
+
+      run.timeline.push({ at: fixedAt, type: 'run_advanced', detail: `Run advanced into ${stepId}.` })
+      return json(run)
+    }
+
+    const dispatchStepMatch = path.match(/\/api\/flow\/v1\/runs\/([^/]+)\/dispatch-step$/)
+    if (method === 'POST' && dispatchStepMatch?.[1]) {
+      if (fail.dispatchStep || shouldFailOnce('dispatchStep')) return json({ error: 'dispatch service unavailable right now' }, 503)
+
+      const run = findRun(dispatchStepMatch[1])
+      if (!run) return json({ error: 'run not found' }, 404)
+      if (run.status !== 'running') return json({ error: 'run is not running' }, 409)
+
+      const activeStep = latestRunningStep(run)
+      if (!activeStep) return json({ error: 'no active step to dispatch' }, 409)
+
+      const payloadText = req.postData() || '{}'
+      const payload = JSON.parse(payloadText)
+
+      const handoff = ensureHandoff(run, activeStep.stepId)
+      handoff.status = 'dispatched'
+      handoff.sessionId = payload.sessionId || handoff.sessionId
+      handoff.dispatchAttemptAt = fixedAt
+      handoff.updatedAt = fixedAt
+
+      run.timeline.push({ at: fixedAt, type: 'step_dispatched', detail: `Step ${activeStep.stepId} dispatched.` })
+      return json(run)
+    }
+
+    const completeStepMatch = path.match(/\/api\/flow\/v1\/runs\/([^/]+)\/complete-step$/)
+    if (method === 'POST' && completeStepMatch?.[1]) {
+      if (fail.completeStep || shouldFailOnce('completeStep')) return json({ error: 'step completion unavailable right now' }, 503)
+
+      const run = findRun(completeStepMatch[1])
+      if (!run) return json({ error: 'run not found' }, 404)
+
+      const workflow = workflowByID(run.workflowId)
+      if (!workflow) return json({ error: 'workflow not found' }, 404)
+
+      const activeStep = latestRunningStep(run)
+      if (!activeStep) return json({ error: 'no active step to complete' }, 409)
+
+      activeStep.status = 'completed'
+      activeStep.finishedAt = fixedAt
+
+      const currentIndex = workflow.steps.findIndex((step) => step.id === activeStep.stepId)
+      const nextStep = currentIndex >= 0 ? workflow.steps[currentIndex + 1] : undefined
+
+      if (!nextStep) {
+        run.status = 'completed'
+      } else {
+        run.currentStep = nextStep.id
+        if (nextStep.kind === 'human_approval' || nextStep.approverPolicy) {
+          run.status = 'waiting_for_approval'
+          run.steps.push({
+            runId: run.id,
+            stepId: nextStep.id,
+            status: 'waiting_for_approval',
+            workerId: 'operator',
+            startedAt: fixedAt,
+            kind: nextStep.kind,
+            agent: nextStep.agent
+          })
+          const approvalHandoff = ensureHandoff(run, nextStep.id)
+          approvalHandoff.status = 'pending'
+          approvalHandoff.kind = nextStep.kind
+          approvalHandoff.workerId = 'operator'
+          approvalHandoff.updatedAt = fixedAt
+        } else {
+          run.status = 'running'
+          run.steps.push({
+            runId: run.id,
+            stepId: nextStep.id,
+            status: 'running',
+            workerId: `worker-${nextStep.id}`,
+            startedAt: fixedAt,
+            kind: nextStep.kind,
+            agent: nextStep.agent
+          })
+          const nextHandoff = ensureHandoff(run, nextStep.id)
+          nextHandoff.status = 'claimed'
+          nextHandoff.kind = nextStep.kind
+          nextHandoff.workerId = `worker-${nextStep.id}`
+          nextHandoff.updatedAt = fixedAt
+        }
+      }
+
+      run.timeline.push({ at: fixedAt, type: 'step_completed', detail: `Step ${activeStep.stepId} completed.` })
+      return json(run)
+    }
+
+    const failStepMatch = path.match(/\/api\/flow\/v1\/runs\/([^/]+)\/fail-step$/)
+    if (method === 'POST' && failStepMatch?.[1]) {
+      if (fail.failStep || shouldFailOnce('failStep')) return json({ error: 'step failure endpoint unavailable right now' }, 503)
+
+      const run = findRun(failStepMatch[1])
+      if (!run) return json({ error: 'run not found' }, 404)
+
+      const activeStep = latestRunningStep(run)
+      if (!activeStep) return json({ error: 'no active step to fail' }, 409)
+
+      activeStep.status = 'failed'
+      activeStep.finishedAt = fixedAt
+      run.status = 'failed'
+
+      const handoff = ensureHandoff(run, activeStep.stepId)
+      handoff.status = 'failed'
+      handoff.updatedAt = fixedAt
+
+      run.timeline.push({ at: fixedAt, type: 'step_failed', detail: `Step ${activeStep.stepId} failed.` })
       return json(run)
     }
 
