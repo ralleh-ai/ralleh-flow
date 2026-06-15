@@ -13,6 +13,7 @@ type Config struct {
 	DBPath                      string
 	RepoRoot                    string
 	AllowedOrigins              string
+	APIWriteToken               string
 	RedisAddr                   string
 	RedisStream                 string
 	RedisConsumerGrp            string
@@ -35,6 +36,7 @@ func Load() Config {
 		DBPath:                      getEnv("RALLEH_FLOW_DB_PATH", "./data/ralleh-flow.db"),
 		RepoRoot:                    getEnv("RALLEH_FLOW_REPO_ROOT", ""),
 		AllowedOrigins:              getEnv("RALLEH_FLOW_ALLOWED_ORIGINS", "http://localhost:4300,http://127.0.0.1:4300"),
+		APIWriteToken:               getEnv("RALLEH_FLOW_API_WRITE_TOKEN", ""),
 		RedisAddr:                   getEnv("RALLEH_FLOW_REDIS_ADDR", ""),
 		RedisStream:                 getEnv("RALLEH_FLOW_REDIS_STREAM", "ralleh-flow:runs"),
 		RedisConsumerGrp:            getEnv("RALLEH_FLOW_REDIS_CONSUMER_GROUP", "ralleh-flow-orchestrators"),

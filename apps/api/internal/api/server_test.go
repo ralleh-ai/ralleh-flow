@@ -37,6 +37,33 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+func TestWriteEndpointsRequireBearerTokenWhenConfigured(t *testing.T) {
+	server := NewServer(config.Config{APIAddr: ":0", AllowedOrigins: "http://localhost:4300", APIWriteToken: "top-secret"})
+
+	res := httptest.NewRecorder()
+	server.Handler.ServeHTTP(res, httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader([]byte(`{"workflowId":"x"}`))))
+	if res.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d (%s)", res.Code, res.Body.String())
+	}
+	if !strings.Contains(res.Body.String(), "invalid bearer token") {
+		t.Fatalf("expected bearer-token error, got %s", res.Body.String())
+	}
+}
+
+func TestWriteEndpointsAcceptValidBearerTokenWhenConfigured(t *testing.T) {
+	server := NewServer(config.Config{APIAddr: ":0", AllowedOrigins: "http://localhost:4300", APIWriteToken: "top-secret"})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", bytes.NewReader([]byte(`{"workflowId":"x"}`)))
+	req.Header.Set("Authorization", "Bearer top-secret")
+	req.Header.Set("Content-Type", "application/json")
+	res := httptest.NewRecorder()
+	server.Handler.ServeHTTP(res, req)
+
+	if res.Code == http.StatusUnauthorized {
+		t.Fatalf("expected non-401 with valid bearer token, got %d (%s)", res.Code, res.Body.String())
+	}
+}
+
 func TestReadyzUsesMemoryCoordinatorByDefault(t *testing.T) {
 	server := NewServer(config.Config{APIAddr: ":0", AllowedOrigins: "http://localhost:4300"})
 	res := httptest.NewRecorder()

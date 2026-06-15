@@ -76,11 +76,12 @@ Scope: active branch `isbe/approval-recovery-typecheck` through commit `132b08d`
 ### Implemented hardening
 
 - Request-body attack surface reduced at API layer (size + schema strictness).
+- Optional bearer-token gate for all mutation endpoints via `RALLEH_FLOW_API_WRITE_TOKEN`.
 - Readiness endpoint behavior indicates coordination mode and actual backend status.
 
 ### High-priority next controls
 
-1. Add authn/authz middleware for mutation endpoints (`POST /v1/*`).
+1. Replace single shared write token with role-aware authn/authz.
 2. Add rate limiting for write/mutation APIs.
 3. Add structured security audit logs for approvals and step mutations.
 4. Add run retention/cleanup policy for worktrees/runtime directories.
@@ -98,6 +99,13 @@ Scope: active branch `isbe/approval-recovery-typecheck` through commit `132b08d`
 - Every runtime/contract change must update docs in the same PR and reference validating tests/scripts.
 
 ## 7) Platform Integration Points (Ralleh Ecosystem)
+
+Current implementation now includes explicit outbound interfaces in Go service layer:
+- `TaskEventPublisher`
+- `SecretResolver`
+- `ContextProvider`
+
+These ports are currently wired with noop defaults and define the concrete integration seam for phased adoption.
 
 ## 7.1 `ralleh-tasks` integration (task state + execution ledger)
 

@@ -830,6 +830,8 @@ Implemented since the original draft:
 - guarded run transitions for pending/advance/dispatch/complete/fail/resume paths
 - approval decision endpoints (approve/reject/request-changes)
 - optional OpenClaw hook dispatcher integration and Redis-backed coordinator/event bus modes
+- API write-endpoint bearer-token protection via `RALLEH_FLOW_API_WRITE_TOKEN`
+- explicit outbound integration ports for `ralleh-tasks`, `ralleh-keys`, and Engram (`TaskEventPublisher`, `SecretResolver`, `ContextProvider`)
 - Playwright UI coverage for operator happy-path, empty-state, and API-failure surfaces
 
 Still not implemented and should be treated as active gaps:

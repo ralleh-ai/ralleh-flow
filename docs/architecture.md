@@ -26,6 +26,10 @@ The architecture prioritizes reproducibility, isolation, and operational visibil
 - workflow state-transition engine with checkpoint persistence
 - approval pause/resume lifecycle handling
 - dispatch integration with OpenClaw agent workflows (noop fallback available)
+- explicit outbound service ports for ecosystem alignment:
+  - `TaskEventPublisher` (ralleh-tasks integration boundary)
+  - `SecretResolver` (ralleh-keys integration boundary)
+  - `ContextProvider` (Engram integration boundary)
 
 Current MVP note: run progression and callbacks are implemented, but fully autonomous execution workers for step kinds are still a near-term hardening target.
 

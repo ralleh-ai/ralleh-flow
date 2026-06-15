@@ -27,6 +27,7 @@ func newServerWithRuntime(cfg config.Config, workflowService service.WorkflowSer
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(cors(cfg.AllowedOrigins))
+	r.Use(requireWriteToken(cfg.APIWriteToken))
 
 	r.Get("/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "ralleh-flow-api"})
@@ -450,6 +451,30 @@ func writeJSONDecodeError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
+}
+
+func requireWriteToken(expectedToken string) func(http.Handler) http.Handler {
+	expectedToken = strings.TrimSpace(expectedToken)
+	if expectedToken == "" {
+		return func(next http.Handler) http.Handler { return next }
+	}
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+			const prefix = "Bearer "
+			if !strings.HasPrefix(authorization, prefix) || strings.TrimSpace(strings.TrimPrefix(authorization, prefix)) != expectedToken {
+				writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "missing or invalid bearer token"})
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func cors(allowedOrigins string) func(http.Handler) http.Handler {

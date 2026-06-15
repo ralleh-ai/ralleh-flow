@@ -78,14 +78,17 @@ const runStatusChangesRequested = "changes_requested"
 const runStatusWaitingForApproval = "waiting_for_approval"
 
 type RunService struct {
-	store       *RunStore
-	workflows   WorkflowService
-	repoRoot    string
-	coordinator Coordinator
-	eventBus    EventBus
-	dispatcher  Dispatcher
-	leaseTTL    time.Duration
-	workerID    string
+	store           *RunStore
+	workflows       WorkflowService
+	repoRoot        string
+	coordinator     Coordinator
+	eventBus        EventBus
+	dispatcher      Dispatcher
+	taskEvents      TaskEventPublisher
+	secretResolver  SecretResolver
+	contextProvider ContextProvider
+	leaseTTL        time.Duration
+	workerID        string
 }
 
 func NewRunService(dbPath, repoRoot string, workflows WorkflowService) *RunService {
@@ -95,14 +98,17 @@ func NewRunService(dbPath, repoRoot string, workflows WorkflowService) *RunServi
 	}
 
 	return &RunService{
-		store:       NewRunStore(dbPath),
-		workflows:   workflows,
-		repoRoot:    root,
-		coordinator: NewInMemoryCoordinator(),
-		eventBus:    NewInMemoryEventBus(),
-		dispatcher:  NewNoopDispatcher(),
-		leaseTTL:    30 * time.Second,
-		workerID:    fmt.Sprintf("run-service-%d", time.Now().UnixNano()),
+		store:           NewRunStore(dbPath),
+		workflows:       workflows,
+		repoRoot:        root,
+		coordinator:     NewInMemoryCoordinator(),
+		eventBus:        NewInMemoryEventBus(),
+		dispatcher:      NewNoopDispatcher(),
+		taskEvents:      NewNoopTaskEventPublisher(),
+		secretResolver:  NewNoopSecretResolver(),
+		contextProvider: NewNoopContextProvider(),
+		leaseTTL:        30 * time.Second,
+		workerID:        fmt.Sprintf("run-service-%d", time.Now().UnixNano()),
 	}
 }
 
@@ -127,6 +133,27 @@ func (s *RunService) WorkerID() string {
 func (s *RunService) WithDispatcher(dispatcher Dispatcher) *RunService {
 	if dispatcher != nil {
 		s.dispatcher = dispatcher
+	}
+	return s
+}
+
+func (s *RunService) WithTaskEventPublisher(publisher TaskEventPublisher) *RunService {
+	if publisher != nil {
+		s.taskEvents = publisher
+	}
+	return s
+}
+
+func (s *RunService) WithSecretResolver(resolver SecretResolver) *RunService {
+	if resolver != nil {
+		s.secretResolver = resolver
+	}
+	return s
+}
+
+func (s *RunService) WithContextProvider(provider ContextProvider) *RunService {
+	if provider != nil {
+		s.contextProvider = provider
 	}
 	return s
 }
@@ -182,7 +209,7 @@ func (s *RunService) ApproveApproval(ctx context.Context, approvalID string, inp
 	}
 
 	for _, event := range publishedEvents {
-		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+		if err := s.publishLifecycleEvent(ctx, run.ID, event, TaskLifecycleEvent{RunID: run.ID, Type: event.Type, At: event.At, Detail: event.Detail, Source: "ralleh-flow", WorkerID: s.workerID, StepID: approval.StepID}); err != nil {
 			return RunRecord{}, err
 		}
 	}
@@ -217,7 +244,7 @@ func (s *RunService) RejectApproval(ctx context.Context, approvalID string, inpu
 	}
 
 	for _, event := range []TimelineEvent{approvalRejectedEvent, runFailedEvent} {
-		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+		if err := s.publishLifecycleEvent(ctx, run.ID, event, TaskLifecycleEvent{RunID: run.ID, Type: event.Type, At: event.At, Detail: event.Detail, Source: "ralleh-flow", WorkerID: s.workerID, StepID: approval.StepID}); err != nil {
 			return RunRecord{}, err
 		}
 	}
@@ -255,7 +282,7 @@ func (s *RunService) RequestApprovalChanges(ctx context.Context, approvalID stri
 	}
 
 	for _, event := range []TimelineEvent{changesRequestedEvent, runPausedEvent} {
-		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+		if err := s.publishLifecycleEvent(ctx, run.ID, event, TaskLifecycleEvent{RunID: run.ID, Type: event.Type, At: event.At, Detail: event.Detail, Source: "ralleh-flow", WorkerID: s.workerID, StepID: approval.StepID}); err != nil {
 			return RunRecord{}, err
 		}
 	}
@@ -324,7 +351,7 @@ func (s *RunService) ResumeRun(ctx context.Context, runID string) (RunRecord, er
 	}
 
 	for _, event := range []TimelineEvent{approvalReopenedEvent, runResumedEvent} {
-		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+		if err := s.publishLifecycleEvent(ctx, run.ID, event, TaskLifecycleEvent{RunID: run.ID, Type: event.Type, At: event.At, Detail: event.Detail, Source: "ralleh-flow", WorkerID: s.workerID, StepID: approval.StepID}); err != nil {
 			return RunRecord{}, err
 		}
 	}
@@ -434,7 +461,7 @@ func (s *RunService) AdvancePendingRun(ctx context.Context, runID string) (RunRe
 	}
 
 	for _, event := range []TimelineEvent{runStartedEvent, stepStartedEvent, handoffEvent} {
-		if err := s.eventBus.PublishRunEvent(ctx, runID, event); err != nil {
+		if err := s.publishLifecycleEvent(ctx, runID, event, TaskLifecycleEvent{RunID: runID, Type: event.Type, At: event.At, Detail: event.Detail, Source: "ralleh-flow", WorkerID: s.workerID, StepID: step.ID}); err != nil {
 			return RunRecord{}, err
 		}
 	}
@@ -517,7 +544,7 @@ func (s *RunService) DispatchActiveStep(ctx context.Context, runID string, input
 	if err := s.store.MarkHandoffDispatched(ctx, run.ID, step.StepID, sessionID, upstreamRunID, dispatchedAt, "claimed", []TimelineEvent{dispatchEvent}); err != nil {
 		return RunRecord{}, err
 	}
-	if err := s.eventBus.PublishRunEvent(ctx, run.ID, dispatchEvent); err != nil {
+	if err := s.publishLifecycleEvent(ctx, run.ID, dispatchEvent, TaskLifecycleEvent{RunID: run.ID, Type: dispatchEvent.Type, At: dispatchEvent.At, Detail: dispatchEvent.Detail, Source: "ralleh-flow", WorkerID: s.workerID, StepID: step.StepID, SessionID: sessionID}); err != nil {
 		return RunRecord{}, err
 	}
 	return s.Get(ctx, run.ID)
@@ -626,7 +653,7 @@ func (s *RunService) CompleteActiveStep(ctx context.Context, runID string, input
 		return RunRecord{}, err
 	}
 	for _, event := range publishedEvents {
-		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+		if err := s.publishLifecycleEvent(ctx, run.ID, event, TaskLifecycleEvent{RunID: run.ID, Type: event.Type, At: event.At, Detail: event.Detail, Source: "ralleh-flow", WorkerID: s.workerID, StepID: step.StepID, SessionID: handoff.SessionID}); err != nil {
 			return RunRecord{}, err
 		}
 	}
@@ -670,7 +697,7 @@ func (s *RunService) FailActiveStep(ctx context.Context, runID string, input Ste
 		return RunRecord{}, err
 	}
 	for _, event := range []TimelineEvent{stepFailedEvent, runFailedEvent} {
-		if err := s.eventBus.PublishRunEvent(ctx, run.ID, event); err != nil {
+		if err := s.publishLifecycleEvent(ctx, run.ID, event, TaskLifecycleEvent{RunID: run.ID, Type: event.Type, At: event.At, Detail: event.Detail, Source: "ralleh-flow", WorkerID: s.workerID, StepID: step.StepID, SessionID: handoff.SessionID}); err != nil {
 			return RunRecord{}, err
 		}
 	}
@@ -751,6 +778,19 @@ func (s *RunService) loadApprovalContext(ctx context.Context, approvalID string)
 	}
 
 	return approval, run, workflow, step, nil
+}
+
+func (s *RunService) publishLifecycleEvent(ctx context.Context, runID string, timelineEvent TimelineEvent, taskEvent TaskLifecycleEvent) error {
+	if err := s.eventBus.PublishRunEvent(ctx, runID, timelineEvent); err != nil {
+		return err
+	}
+	if s.taskEvents == nil {
+		return nil
+	}
+	if strings.TrimSpace(taskEvent.Source) == "" {
+		taskEvent.Source = "ralleh-flow"
+	}
+	return s.taskEvents.PublishTaskEvent(ctx, taskEvent)
 }
 
 func (s *RunService) writeStepCheckpoint(runID, label string, payload map[string]any) error {
@@ -901,7 +941,7 @@ func (s *RunService) Create(ctx context.Context, input CreateRunInput) (RunRecor
 	run.Timeline = []TimelineEvent{createdEvent, preparedEvent, pendingEvent}
 
 	for _, event := range run.Timeline {
-		if err := s.eventBus.PublishRunEvent(ctx, runID, event); err != nil {
+		if err := s.publishLifecycleEvent(ctx, runID, event, TaskLifecycleEvent{RunID: runID, Type: event.Type, At: event.At, Detail: event.Detail, Source: "ralleh-flow", WorkerID: s.workerID}); err != nil {
 			_ = s.store.Delete(ctx, runID)
 			cleanupPreparedRun(ctx, s.repoRoot, branchName, workspacePath, runRoot)
 			return RunRecord{}, err

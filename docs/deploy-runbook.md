@@ -44,7 +44,24 @@ sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 sudo systemctl reload caddy
 ```
 
-## 4) Post-deploy verification
+## 4) API mutation protection baseline
+
+For production, set a write token so all `POST /v1/*` endpoints require bearer auth.
+
+Environment variable:
+- `RALLEH_FLOW_API_WRITE_TOKEN=<strong-random-token>`
+
+Example verification:
+
+```bash
+curl -i -X POST http://127.0.0.1:4310/v1/runs -d '{}'
+curl -i -X POST http://127.0.0.1:4310/v1/runs \
+  -H "Authorization: Bearer ${RALLEH_FLOW_API_WRITE_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"workflowId":"example"}'
+```
+
+## 5) Post-deploy verification
 
 At minimum:
 
@@ -58,7 +75,7 @@ Then run the web smoke lane from CI or local host:
 pnpm --dir apps/web test:ui:live
 ```
 
-## 5) Rollback procedure
+## 6) Rollback procedure
 
 If a deploy is unhealthy:
 
