@@ -7,8 +7,8 @@ on:
       - main
 
 jobs:
-  web-quality:
-    name: Web lint/typecheck
+  production-gate:
+    name: Production gate (API + web build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,15 +19,22 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/api/go.mod
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Verify backend
+        run: pnpm api:test
       - name: Typecheck (web)
         run: pnpm web:lint
+      - name: Build web
+        run: pnpm web:build
 
   e2e-deterministic:
     name: Playwright deterministic lane
     runs-on: ubuntu-latest
-    needs: web-quality
+    needs: production-gate
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -57,7 +64,7 @@ jobs:
   e2e-live-smoke:
     name: Playwright live API smoke lane
     runs-on: ubuntu-latest
-    needs: web-quality
+    needs: production-gate
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

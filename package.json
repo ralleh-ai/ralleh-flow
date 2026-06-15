@@ -8,6 +8,7 @@
     "web:preview": "pnpm --dir apps/web preview",
     "web:lint": "pnpm --dir apps/web exec nuxi typecheck",
     "api:run": "cd apps/api && go run ./cmd/ralleh-flow-api",
-    "api:test": "cd apps/api && go test ./..."
+    "api:test": "cd apps/api && go test ./...",
+    "verify:mvp": "./scripts/verify-mvp.sh"
   }
 }
