@@ -60,6 +60,42 @@ Ralleh Flow already supports multiple execution patterns that teams can mix depe
 
 These patterns let Ralleh Flow function as a true **AI operations control room**: fast enough for day-to-day execution, but governed enough for high-stakes production work.
 
+## Real-world workflow examples
+
+Here are believable, high-signal examples of what teams can run through Ralleh Flow today:
+
+- **Production incident triage + patch rollout**
+  - Trigger run from an incident workflow
+  - Agent gathers logs, proposes root-cause hypotheses, drafts a patch
+  - Human gate approves rollback vs fix-forward decision
+  - Run records exact decision path, patch artifacts, and final outcome
+
+- **Security dependency update with controlled approval**
+  - Workflow scans dependencies and prepares update PRs
+  - Agent executes compatibility checks and summarizes breaking risk
+  - Approval gate requires security/lead sign-off before merge
+  - Timeline preserves who approved, why, and which evidence was reviewed
+
+- **Weekly content pipeline (draft → review → publish-ready)**
+  - Workflow assembles source material and drafts structured content
+  - Editorial agent iterates through revisions against quality rules
+  - Human reviewer approves, rejects, or requests changes with rationale
+  - Final package ships with traceable revision history
+
+- **Customer escalation response workflow**
+  - Intake step captures escalation facts and desired SLA path
+  - Agent prepares technical summary + response options
+  - Operator approves outbound response and remediation actions
+  - Execution history links every action back to run context
+
+- **Data/report generation with compliance checkpoints**
+  - Workflow runs data pull + report generation on schedule or demand
+  - Validation steps flag anomalies and require explicit approval on threshold breaches
+  - Approved reports move forward; failed validations branch into recovery actions
+  - Full audit trail supports postmortem and compliance review
+
+These examples are intentionally generic, but they map directly to the same core capabilities in this repo: deterministic state transitions, approval checkpoints, agent handoffs, and Git-backed provenance.
+
 ## Why it matters (the potential)
 
 Ralleh Flow is designed to evolve from a workflow runner into a durable operations platform for AI-native teams:
