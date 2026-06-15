@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import type { FlowRun } from '../../../types/flow'
+import type { FlowRun } from '../../types/flow'
 import { installFlowApiMocks } from './fixtures/flowApi'
 
 const quietRuns: FlowRun[] = [
@@ -64,4 +64,45 @@ test('approvals renders API failure banner when queue fetch fails', async ({ pag
 
   await expect(page.getByTestId('approval-error-banner')).toBeVisible()
   await expect(page.getByText('Could not load approvals.')).toBeVisible()
+})
+
+test('approvals requires rationale before reject or request-changes', async ({ page }) => {
+  await installFlowApiMocks(page)
+
+  await page.goto('/approvals')
+
+  const approvalCard = page.getByTestId('approval-card-approval-1')
+  await approvalCard.getByTestId('approval-reject-approval-1').click()
+
+  await expect(approvalCard.getByTestId('approval-action-error-approval-1')).toContainText('Operator rationale is required before rejecting or requesting changes.')
+  await expect(approvalCard.getByTestId('approval-status-approval-1')).toContainText('pending')
+})
+
+test('approvals surfaces operator recovery guidance when a decision API call fails', async ({ page }) => {
+  await installFlowApiMocks(page, { fail: { approvalDecision: 'request-changes' } })
+
+  await page.goto('/approvals')
+
+  const approvalCard = page.getByTestId('approval-card-approval-1')
+  await approvalCard.getByTestId('approval-note-approval-1').fill('Need explicit rollback notes before retry.')
+  await approvalCard.getByTestId('approval-request-changes-approval-1').click()
+
+  await expect(approvalCard.getByTestId('approval-action-error-approval-1')).toContainText('could not request-changes approval right now')
+  await expect(approvalCard.getByTestId('approval-status-approval-1')).toContainText('pending')
+})
+
+test('approvals shows clear resume recovery failure when gate cannot be reopened', async ({ page }) => {
+  await installFlowApiMocks(page, { fail: { resume: true } })
+
+  await page.goto('/approvals')
+
+  const approvalCard = page.getByTestId('approval-card-approval-1')
+  await approvalCard.getByTestId('approval-note-approval-1').fill('Need a revised impact assessment.')
+  await approvalCard.getByTestId('approval-request-changes-approval-1').click()
+  await expect(approvalCard.getByTestId('approval-status-approval-1')).toContainText('changes requested')
+
+  await approvalCard.getByTestId('approval-resume-approval-1').click()
+
+  await expect(approvalCard.getByTestId('approval-action-error-approval-1')).toContainText('run recovery unavailable right now')
+  await expect(approvalCard.getByTestId('approval-status-approval-1')).toContainText('changes requested')
 })

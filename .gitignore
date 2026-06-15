@@ -5,6 +5,11 @@ node_modules/
 out/
 dist/
 coverage/
+test-results/
+playwright-report/
+
+# Local agent tooling
+.openclaw/
 
 # Env / secrets
 .env

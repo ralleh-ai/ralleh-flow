@@ -16,6 +16,8 @@ type FlowApiMockOptions = {
     runs?: boolean
     approvals?: boolean
     runDetail?: boolean
+    resume?: boolean
+    approvalDecision?: 'approve' | 'reject' | 'request-changes' | 'any'
   }
 }
 
@@ -152,6 +154,8 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
     runs: false,
     approvals: false,
     runDetail: false,
+    resume: false,
+    approvalDecision: undefined,
     ...options.fail
   }
 
@@ -205,9 +209,17 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
       const approval = state.approvals.find((item) => item.id === approvalId)
       if (!approval) return json({ error: 'approval not found' }, 404)
 
+      if (fail.approvalDecision === 'any' || fail.approvalDecision === decision) {
+        return json({ error: `could not ${decision} approval right now` }, 500)
+      }
+
       const run = state.runs.find((item) => item.id === approval.runId)
       const payloadText = req.postData() || '{}'
       const payload = JSON.parse(payloadText)
+
+      if ((decision === 'reject' || decision === 'request-changes') && !String(payload.rationale || '').trim()) {
+        return json({ error: 'rationale is required for this decision' }, 422)
+      }
 
       approval.decidedBy = payload.decidedBy || 'operator'
       approval.rationale = payload.rationale
@@ -229,10 +241,21 @@ export const installFlowApiMocks = async (page: Page, options: FlowApiMockOption
 
     const resumeMatch = path.match(/\/api\/flow\/v1\/runs\/([^/]+)\/resume$/)
     if (method === 'POST' && resumeMatch?.[1]) {
+      if (fail.resume) return json({ error: 'run recovery unavailable right now' }, 503)
       const runId = resumeMatch[1]
       const run = state.runs.find((item) => item.id === runId)
       if (!run) return json({ error: 'run not found' }, 404)
       run.status = 'waiting_for_approval'
+
+      const latestApproval = state.approvals
+        .filter((item) => item.runId === runId)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
+      if (latestApproval && latestApproval.status === 'changes_requested') {
+        latestApproval.status = 'pending'
+        latestApproval.decidedBy = undefined
+        latestApproval.decidedAt = undefined
+      }
+
       return json(run)
     }
 

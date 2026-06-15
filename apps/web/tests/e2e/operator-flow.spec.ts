@@ -28,6 +28,10 @@ test('approvals queue exposes trust context and supports decision state transiti
 
   await expect(approvalCard.getByTestId('approval-status-approval-1')).toContainText('changes requested')
   await expect(approvalCard.getByTestId('approval-resume-approval-1')).toBeVisible()
+  await expect(approvalCard).toContainText('Recovery path: resume returns this run to waiting_for_approval')
+
+  await approvalCard.getByTestId('approval-resume-approval-1').click()
+  await expect(approvalCard.getByTestId('approval-status-approval-1')).toContainText('pending')
 })
 
 test('run detail renders mission progression and linked approval context', async ({ page }) => {
@@ -35,6 +39,7 @@ test('run detail renders mission progression and linked approval context', async
 
   await expect(page.getByTestId('run-mission-header')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Mission sequence' })).toBeVisible()
+  await expect(page.getByTestId('run-recovery-state')).toContainText('Recovery checkpoint: this run is back at the approval gate')
 
   const stepCards = page.getByTestId('run-step-card')
   await expect(stepCards).toHaveCount(3)
@@ -47,4 +52,3 @@ test('run detail renders mission progression and linked approval context', async
   await expect(linkedApproval).toContainText('Governance object in context')
   await expect(linkedApproval).toContainText('pending')
 })
-

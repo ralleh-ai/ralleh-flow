@@ -32,8 +32,25 @@ const resumableItems = computed(() => items.value.filter((approval) => approval.
 const rejectedItems = computed(() => items.value.filter((approval) => approval.status === 'rejected'))
 const approvedItems = computed(() => items.value.filter((approval) => approval.status === 'approved'))
 const busyApprovalId = ref<string | null>(null)
-const actionError = ref<string>('')
+const actionErrors = reactive<Record<string, string>>({})
 const rationaleDrafts = reactive<Record<string, string>>({})
+
+const clearActionError = (approvalId: string) => {
+  if (actionErrors[approvalId]) delete actionErrors[approvalId]
+}
+
+const formatDecisionFailure = (decision: 'approve' | 'reject' | 'request-changes' | 'resume') => {
+  if (decision === 'approve') {
+    return 'Approval did not go through. Refresh mission context and retry. The run remains blocked until approval succeeds.'
+  }
+  if (decision === 'reject') {
+    return 'Rejection did not save. Keep your operator rationale, refresh run context, and retry when the stop decision is still correct.'
+  }
+  if (decision === 'request-changes') {
+    return 'Request changes did not save. Confirm the rationale is explicit and retry so recovery expectations stay auditable.'
+  }
+  return 'Could not resume this approval gate. Re-verify rework evidence and run state, then retry recovery.'
+}
 
 const statusRank = (status: string) => {
   if (status === 'pending') return 0
@@ -91,14 +108,14 @@ const liveGovernedRuns = computed(() => {
 
 const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' | 'reject' | 'request-changes' | 'resume') => {
   const rationale = (rationaleDrafts[approval.id] ?? '').trim()
+  clearActionError(approval.id)
 
   if ((decision === 'reject' || decision === 'request-changes') && !rationale) {
-    actionError.value = 'Add an operator note before rejecting or requesting changes.'
+    actionErrors[approval.id] = 'Operator rationale is required before rejecting or requesting changes.'
     return
   }
 
   busyApprovalId.value = approval.id
-  actionError.value = ''
   try {
     if (decision === 'approve') {
       await api.approveApproval(approval.id, { decidedBy, rationale: rationale || undefined })
@@ -110,9 +127,10 @@ const decideApproval = async (approval: FlowApprovalRecord, decision: 'approve' 
       await api.resumeRun(approval.runId)
     }
     rationaleDrafts[approval.id] = ''
+    clearActionError(approval.id)
     await refresh()
   } catch (error: any) {
-    actionError.value = error?.data?.error ?? error?.message ?? `Could not ${decision} approval.`
+    actionErrors[approval.id] = error?.data?.error ?? error?.message ?? formatDecisionFailure(decision)
   } finally {
     busyApprovalId.value = null
   }
@@ -268,10 +286,6 @@ const approvalFacts = (approval: FlowApprovalRecord): OperationalFact[] => {
       </div>
 
       <div v-else class="mt-4 space-y-4">
-        <div v-if="actionError" class="rounded-2xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-100">
-          {{ actionError }}
-        </div>
-
         <article
           v-for="approval in orderedItems"
           :key="approval.id"
@@ -350,11 +364,22 @@ const approvalFacts = (approval: FlowApprovalRecord): OperationalFact[] => {
                 <textarea
                   v-model="rationaleDrafts[approval.id]"
                   :data-testid="`approval-note-${approval.id}`"
+                  :aria-invalid="Boolean(actionErrors[approval.id])"
                   rows="4"
                   class="w-full rounded-xl border border-[color:var(--rf-border)] bg-black/20 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-400/60"
                   placeholder="Capture why you are approving, rejecting, or requesting changes."
+                  @input="clearActionError(approval.id)"
                 />
                 <p class="mt-2 text-xs text-[color:var(--rf-muted)]">Required for reject or request-changes. Strongly recommended for approve.</p>
+                <p
+                  v-if="actionErrors[approval.id]"
+                  :data-testid="`approval-action-error-${approval.id}`"
+                  class="mt-3 rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-100"
+                  role="alert"
+                  aria-live="polite"
+                >
+                  {{ actionErrors[approval.id] }}
+                </p>
                 <div class="mt-3 flex flex-wrap justify-end gap-2">
                   <button class="rf-button rf-button--ghost" :data-testid="`approval-reject-${approval.id}`" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'reject')">
                     Reject
@@ -373,6 +398,18 @@ const approvalFacts = (approval: FlowApprovalRecord): OperationalFact[] => {
                 <div class="text-xs uppercase tracking-[0.2em] text-[color:var(--rf-muted)]">Resume gate</div>
                 <p class="mt-2 text-sm text-[color:var(--rf-muted)]">
                   Reopen this approval only after reviewing the linked mission and confirming the requested rework actually happened.
+                </p>
+                <div class="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+                  Recovery path: resume returns this run to <span class="font-semibold">waiting_for_approval</span> so the same gate is decided again with updated evidence.
+                </div>
+                <p
+                  v-if="actionErrors[approval.id]"
+                  :data-testid="`approval-action-error-${approval.id}`"
+                  class="mt-3 rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-100"
+                  role="alert"
+                  aria-live="polite"
+                >
+                  {{ actionErrors[approval.id] }}
                 </p>
                 <button class="rf-button mt-4 w-full justify-center" :data-testid="`approval-resume-${approval.id}`" :disabled="busyApprovalId === approval.id" @click="decideApproval(approval, 'resume')">
                   <span v-if="busyApprovalId === approval.id">Working…</span>

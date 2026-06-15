@@ -165,6 +165,20 @@ const attentionSummary = computed(() => {
   return 'No immediate intervention required from current API state.'
 })
 
+const recoveryStateLabel = computed(() => {
+  if (!run.value) return ''
+  if (run.value.status === 'changes_requested') {
+    return 'Recovery required: this run is paused for operator-requested changes before the approval gate can be reopened.'
+  }
+  if (run.value.status === 'waiting_for_approval') {
+    return 'Recovery checkpoint: this run is back at the approval gate and needs an explicit operator decision.'
+  }
+  if (run.value.status === 'rejected') {
+    return 'Recovery halted: governance rejected this path. Start a new run if a corrected attempt is still warranted.'
+  }
+  return ''
+})
+
 const recentTimeline = computed(() => [...timeline.value].reverse())
 
 const statusTone = (status: string) => {
@@ -547,7 +561,7 @@ const resumeRun = async () => {
     stepActionError.value = ''
     run.value = await api.resumeRun(run.value.id)
   } catch (err: any) {
-    stepActionError.value = err?.data?.error || err?.message || 'Could not resume run'
+    stepActionError.value = err?.data?.error || err?.message || 'Could not resume the approval gate. Verify rework evidence and retry.'
   } finally {
     resuming.value = false
   }
@@ -675,8 +689,16 @@ const failStep = async () => {
         </div>
       </div>
 
+      <div
+        v-if="recoveryStateLabel"
+        data-testid="run-recovery-state"
+        class="mt-4 rounded-2xl border border-cyan-400/20 bg-cyan-500/10 p-4 text-sm text-cyan-100"
+      >
+        {{ recoveryStateLabel }}
+      </div>
+
       <p v-if="advanceError" class="mt-4 text-sm text-rose-200">{{ advanceError }}</p>
-      <p v-if="stepActionError" class="mt-2 text-sm text-rose-200">{{ stepActionError }}</p>
+      <p v-if="stepActionError" data-testid="run-step-action-error" class="mt-2 text-sm text-rose-200" role="alert" aria-live="polite">{{ stepActionError }}</p>
       <p v-if="workflowError" class="mt-2 text-sm text-amber-200">Workflow context is partial: {{ workflowError }}</p>
     </section>
 
