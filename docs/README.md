@@ -11,6 +11,7 @@ This directory contains the canonical product and engineering documentation for 
 - [`ui-doctrine.md`](ui-doctrine.md) — UI philosophy and operator experience doctrine
 - [`deploy-runbook.md`](deploy-runbook.md) — deployment, rollback, and hardening baseline
 - [`deployable-mvp-verified.md`](deployable-mvp-verified.md) — verification definition and gate
+- [`code-review-2026-06.md`](code-review-2026-06.md) — structured architecture/code/security review and ecosystem integration contracts
 
 ## How docs are maintained
 
