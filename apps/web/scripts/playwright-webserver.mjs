@@ -5,7 +5,7 @@ const rootEnv = {
   ...process.env,
   NUXT_UI_TEST_MODE: '1',
   NUXT_APP_BASE_URL: '/',
-  NUXT_PUBLIC_API_BASE: '/api/flow/v1',
+  NUXT_PUBLIC_API_BASE: process.env.NUXT_PUBLIC_API_BASE || '/api/flow/v1',
   NITRO_HOST: '127.0.0.1',
   NITRO_PORT: '4317'
 }

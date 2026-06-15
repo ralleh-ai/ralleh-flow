@@ -1,0 +1,88 @@
+name: Web E2E Reliability
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  web-quality:
+    name: Web lint/typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck (web)
+        run: pnpm web:lint
+
+  e2e-deterministic:
+    name: Playwright deterministic lane
+    runs-on: ubuntu-latest
+    needs: web-quality
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browser
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Run deterministic Playwright lane
+        run: pnpm --dir apps/web test:ui
+      - name: Upload deterministic artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-deterministic-artifacts
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+  e2e-live-smoke:
+    name: Playwright live API smoke lane
+    runs-on: ubuntu-latest
+    needs: web-quality
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/api/go.mod
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browser
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Run live API smoke lane
+        run: pnpm --dir apps/web test:ui:live
+      - name: Upload live smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-live-smoke-artifacts
+          path: |
+            apps/web/playwright-report-live
+            apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 21

@@ -8,6 +8,7 @@
     "preview": "nuxt preview --port 4300",
     "postinstall": "nuxt prepare",
     "test:ui": "playwright test",
+    "test:ui:live": "playwright test -c playwright.live.config.ts",
     "test:ui:headed": "playwright test --headed",
     "test:ui:install": "playwright install chromium",
     "test:ui:server": "node scripts/playwright-webserver.mjs"
